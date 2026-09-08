@@ -1,0 +1,4 @@
+.spectra/
+openspec/.vector-search.db*
+.saifg/
+.copilot-library/

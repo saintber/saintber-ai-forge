@@ -1,0 +1,67 @@
+schema: spec-driven
+
+rules:
+  design:
+    - 一律使用**繁體中文（台灣）**，並採用台灣在地化的慣用詞彙與用語習慣。
+    - 專有名詞、程式碼識別字、指令、檔案路徑、API 名稱、技術關鍵字（如 Blazor、.NET、GKE、Redis、GCS 等）維持原文，不強制翻譯。
+  proposal:
+    - 一律使用**繁體中文（台灣）**，並採用台灣在地化的慣用詞彙與用語習慣。
+    - 專有名詞、程式碼識別字、指令、檔案路徑、API 名稱、技術關鍵字（如 Blazor、.NET、GKE、Redis、GCS 等）維持原文，不強制翻譯。
+  specs:
+    - 一律使用**繁體中文（台灣）**，並採用台灣在地化的慣用詞彙與用語習慣。
+    - 專有名詞、程式碼識別字、指令、檔案路徑、API 名稱、技術關鍵字（如 Blazor、.NET、GKE、Redis、GCS 等）維持原文，不強制翻譯。
+  tasks:
+    - 一律使用**繁體中文（台灣）**，並採用台灣在地化的慣用詞彙與用語習慣。
+    - 專有名詞、程式碼識別字、指令、檔案路徑、API 名稱、技術關鍵字（如 Blazor、.NET、GKE、Redis、GCS 等）維持原文，不強制翻譯。
+# Project context (optional)
+# This is shown to AI when creating artifacts.
+# Add your tech stack, conventions, style guides, domain knowledge, etc.
+context: |
+  # 專案目的
+
+  本專案是一套「多 AI Provider」的 AI 助理與資產工具集，不綁定任何單一 AI 供應商。
+  同一項功能可能同時提供不同 provider（Claude、Codex 等）的對應 skill / agent / command 版本。
+
+  ## 兩大組成
+
+  1. 共用資產庫：提供常用的 commands / agents / skills。
+  2. AI 助理與配套工具：以各家 AI 自家 CLI 為執行核心的 AI 助理，以及助理運作所需的配套工具。
+
+  ## 資產分類（以「字根前綴」區分，非目錄）
+
+  為避免 Claude / Codex 讀不到巢狀目錄下的 agent / md，資產一律平放於 `agents/`，用檔名前綴區分：
+  - 專案 skill：`agents/xxx.md`
+  - 助理自製 skill：`agents/auto.xxx.md`
+  前綴字根（`auto.` 為暫定）尚未定案。
+  助理自製 skill 與其知識庫會被 .gitignore 排除，不會進 commit。
+
+  ## 助理自動啟動
+
+  CLAUDE.md、AGENTS.md 等入口檔僅供 AI（含 AI 助理本身）運作使用，預設會自動呼叫助理。
+  實作形式待定，可能是一個「自我演化」的 command，或 command + agent，或 skill。
+
+  ## 安裝方式
+
+  透過 npx 安裝，可選擇性安裝模組；模組以字根前綴區分要部署哪些 command / agent / skill。
+
+  ## 溝通管道
+
+  提供 line-webhook、telegram 等外部溝通管道，或以 windows service / cronjob 排程呼叫 CLI，
+  達到常駐 AI 助理的效果。這些管道僅為「傳輸層」，但也會納入專案供團隊選用。
+  相關的 secret / key 一律放在 `data/` 資料夾，並被 .gitignore 排除。
+
+# Example:
+#   context: |
+#     Tech stack: TypeScript, React, Node.js
+#     We use conventional commits
+#     Domain: e-commerce platform
+
+# Per-artifact rules (optional)
+# Add custom rules for specific artifacts.
+# Example:
+#   rules:
+#     proposal:
+#       - Keep proposals under 500 words
+#       - Always include a "Non-goals" section
+#     tasks:
+#       - Break tasks into chunks of max 2 hours

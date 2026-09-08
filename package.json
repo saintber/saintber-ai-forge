@@ -1,10 +1,10 @@
 {
-  "name": "@saintber/copilot-library",
+  "name": "@saintber/saifg",
   "version": "0.3.0",
-  "description": "CLI for installing and updating Copilot instructions, prompts, agents, and skills into a target directory.",
+  "description": "Multi-provider AI assistant CLI for installing, updating, and configuring scoped commands, agents, and skills into a target directory.",
   "type": "module",
   "bin": {
-    "saintber-copilot": "./bin/copilot-library.js"
+    "saifg": "./bin/saifg.js"
   },
   "files": [
     "bin",
@@ -14,16 +14,18 @@
     "LICENSE"
   ],
   "scripts": {
-    "start": "node ./bin/copilot-library.js",
+    "start": "node ./bin/saifg.js",
     "test": "node --test",
     "prepublishOnly": "npm test"
   },
   "keywords": [
-    "copilot",
+    "ai-assistant",
     "cli",
     "prompt",
     "agent",
-    "instructions"
+    "instructions",
+    "copilot",
+    "claude"
   ],
   "repository": {
     "type": "git",

@@ -6,6 +6,16 @@
 
 ## [未發布]
 
+### Breaking Change
+
+- **套件與 CLI 指令更名**：套件由 `@saintber/copilot-library` 改為 `@saintber/saifg`，CLI 指令由 `saintber-copilot` 改為 `saifg`；`bin/copilot-library.js` 移除，新增 `bin/saifg.js`。
+- **指令介面改為子命令風格**：`init`/`update`/`remove` 的 `--module`/`--modules` flag 過濾方式移除，改為 `saifg module add|remove|update|list <selector...>` 子命令；`saifg update`（無子命令）保留為 `module update`（不帶 selector）的語法糖；原有頂層 `list`/`remove` 命令移除，改由 `module list`/`module remove` 取代。
+- **資產命名空間新增 scope 維度**：檔名規則由 `<module>.<name>.<type>.md` 擴充為 `[org.|prj.|usr.]<module>.<name>.<type>.md`，省略 scope 前綴代表共用資產；既有 templates 內容不變（尚未套用 scope 前綴），僅解析邏輯支援新格式。
+- **新增 policy 注入機制**：`saifg init`/`saifg update` 會自動偵測目標專案入口檔（`CLAUDE.md`/`AGENTS.md`/`.github/copilot-instructions.md`），寫入/更新 `<!-- SAIFG:START/END -->` 治理規則區塊，並安裝 `.saifg/policy.md`；治理規則說明助理自產、未經人工確認的內容一律歸類為 `usr.` scope，可被 git 追蹤但不進 npm 發行。
+- **新增設定檔管理**：新增 `saifg config get|set|list|path` 指令，管理全域（`~/.saifg/config.yaml`）與專案層（`<target>/.saifg/config.yaml`）雙層設定，schema 為 `storage.{org,project,user}.{memory,keys,kb}`，專案層覆蓋全域層同一 key。
+- 新增 `src/namespace.js`（scope/module/name/type 解析）、`src/config.js`（設定檔讀寫）、`src/policy.js`（policy 注入）；`src/cli.js` 大幅重構以支援上述新指令介面。
+- `.gitignore` 新增 `.saifg/`、`.copilot-library/`，避免本機測試/安裝殘留檔案誤入版控。
+
 ### 變更
 - **AI 工具生產流程改版（Draft/Deploy/Release 階段化）**：
   - `ai/README.md`：將流程改為 module 內雙語 Draft（`ai/<module>/en/[type]`、`ai/<module>/zh-TW/[type]`），移除 `composed` 作為流程主節點，並明確 Deploy/Release 階段邊界。
