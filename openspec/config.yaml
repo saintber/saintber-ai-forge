@@ -1,21 +1,5 @@
 schema: spec-driven
 
-rules:
-  design:
-    - 一律使用**繁體中文（台灣）**，並採用台灣在地化的慣用詞彙與用語習慣。
-    - 專有名詞、程式碼識別字、指令、檔案路徑、API 名稱、技術關鍵字（如 Blazor、.NET、GKE、Redis、GCS 等）維持原文，不強制翻譯。
-  proposal:
-    - 一律使用**繁體中文（台灣）**，並採用台灣在地化的慣用詞彙與用語習慣。
-    - 專有名詞、程式碼識別字、指令、檔案路徑、API 名稱、技術關鍵字（如 Blazor、.NET、GKE、Redis、GCS 等）維持原文，不強制翻譯。
-  specs:
-    - 一律使用**繁體中文（台灣）**，並採用台灣在地化的慣用詞彙與用語習慣。
-    - 專有名詞、程式碼識別字、指令、檔案路徑、API 名稱、技術關鍵字（如 Blazor、.NET、GKE、Redis、GCS 等）維持原文，不強制翻譯。
-  tasks:
-    - 一律使用**繁體中文（台灣）**，並採用台灣在地化的慣用詞彙與用語習慣。
-    - 專有名詞、程式碼識別字、指令、檔案路徑、API 名稱、技術關鍵字（如 Blazor、.NET、GKE、Redis、GCS 等）維持原文，不強制翻譯。
-# Project context (optional)
-# This is shown to AI when creating artifacts.
-# Add your tech stack, conventions, style guides, domain knowledge, etc.
 context: |
   # 專案目的
 
