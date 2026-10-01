@@ -20,3 +20,15 @@
   - 省略前綴：共用資產，無擁有者限定
 - **avoid**：不要把 `scope` 與 `module`（功能模組，如 `code`/`copilot`/`docs`/`kb`/`migration`/`speckit`）混用或並列表述為同一件事；兩者是正交的兩個維度。
 - **why**：`redesign-cli-namespace-and-config` 之前，命名空間只有 module 一個維度，無法表達「這份資產屬於誰」。新增 scope 維度以支援組織/專案/個人三層級資產分類。
+
+## Assistant
+
+- **definition**：`assistant/` 下的 .NET 常駐服務（命名空間 `Saintber.Assistant.*`），負責接收各輸入端（LINE、Telegram、CLI）的訊息、路由到內部 Topic、呼叫 AI CLI 並回覆。收訊只是其中一環，完整設計見 `docs/intents/assistant-design-v0.2.md`。
+- **avoid**：不要再稱為 gateway／AI CLI Gateway（v0.1 舊稱）；也不要與專案層級「AI 助理」概念混用——後者是 `openspec/config.yaml` 所述以 AI CLI 為核心的助理資產與配套工具，`Assistant` 專指此常駐服務。
+- **why**：v0.1 稱 Gateway，但完整設計包含身分映射、Topic、記憶與 AI 執行，遠超過單純轉送，故在 `assistant-line-connector` 討論中改名。
+
+## Connector
+
+- **definition**：Assistant 中負責單一輸入平台的整合模組（例如 `Connectors.Line`）：驗證來源（簽章）、解析為 `InboundEnvelope`、正規化 External Key、發送訊息與活動指示（loading／typing）。
+- **avoid**：不要讓 Connector 判定「兩個外部帳號是否同一個人」或選擇 Topic，這屬於核心 Mapping／Topic Router；也不要把它稱為 channel 或 endpoint（endpoint 專指 HTTP 進入點，屬 Host）。
+- **why**：v0.1 只寫「驗證來源」，v0.2 明確為「驗簽在 Connector 內完成，Host 不理解簽章格式」，以維持平台細節不外洩到核心。
