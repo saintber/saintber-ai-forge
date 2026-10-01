@@ -169,17 +169,32 @@ The LINE platform SHALL declare the Activity capability and, for a one-to-one ch
 
 #### Scenario: Invalid loading seconds
 
-- **WHEN** the configured loading seconds is 7 or 65
+- **WHEN** the configured loading seconds is 7, which is within the range but not a multiple of 5
 - **THEN** connector creation fails with an error naming the setting
+
+#### Scenario: Loading seconds out of range
+
+- **WHEN** the configured loading seconds is 65
+- **THEN** the host's range check fails before the factory is called, naming the setting
+
+#### Scenario: Late loading result is a no-op
+
+- **WHEN** a loading call returns after the framework discarded it as late
+- **THEN** disposing the returned object performs no action, and the documentation states that an animation that already started ends only when its configured seconds elapse or a new message arrives
 
 ### Requirement: LINE capability declaration and settings
 
-The LINE platform SHALL declare the Reply, Push, and Activity capabilities with a reply validity of 50 seconds, and SHALL read `ChannelSecret`, `ChannelAccessToken`, `ApiBaseUrl` (default `https://api.line.me`), and `LoadingSeconds` from its connector settings. Connector creation SHALL fail when `ChannelSecret` or `ChannelAccessToken` is missing or empty, and the error MUST name the missing keys and MUST NOT contain any setting value.
+The LINE platform SHALL declare the Reply, Push, and Activity capabilities with a reply validity of 50 seconds, and its connector factory SHALL publish a settings schema made of setting descriptors: `ChannelSecret` (string, required, secret), `ChannelAccessToken` (string, required, secret), `ApiBaseUrl` (string, default `https://api.line.me`), and `LoadingSeconds` (integer, default 5, range 5 to 60), together with the framework tuning parameters of the connector framework; the rule that `LoadingSeconds` is a multiple of 5 SHALL be validated by the connector factory when it creates the connector and not by the descriptor. Connector creation SHALL fail when `ChannelSecret` or `ChannelAccessToken` is missing or empty, and the error MUST name the missing keys and MUST NOT contain any setting value.
 
 #### Scenario: Capabilities
 
 - **WHEN** the LINE platform's capabilities are read
 - **THEN** Reply, Push, and Activity are declared and the reply validity is 50 seconds
+
+#### Scenario: Settings schema
+
+- **WHEN** the LINE factory lists its settings schema
+- **THEN** it includes `ChannelSecret` and `ChannelAccessToken` marked required and secret, `ApiBaseUrl` with its default, `LoadingSeconds` with default 5 and range 5 to 60, and every framework tuning parameter
 
 #### Scenario: Missing secret
 

@@ -58,7 +58,7 @@ The framework SHALL return the webhook response without awaiting any activity-in
 
 #### Scenario: Response does not wait for processing
 
-- **WHEN** a fake platform delays its activity call by 3 seconds and the handler by 5 seconds
+- **WHEN** the activity timeout is overridden to 10 seconds and a fake platform delays its activity call by 3 seconds and the handler by 5 seconds
 - **THEN** the webhook response is returned before either completes, and both complete afterwards
 
 #### Scenario: Request abort does not cancel work
@@ -216,6 +216,11 @@ The framework SHALL keep, for each admitted event, a reply context in connector-
 - **WHEN** the context is locally expired and the platform does not support Push
 - **THEN** the framework logs that the message is undeliverable and raises no error to the host
 
+#### Scenario: Usable redelivered token is still pushed when locally expired
+
+- **WHEN** a redelivered event whose platform event time is 55 seconds old is first received now with an unused token and the validity is 50 seconds
+- **THEN** delivery uses push because the conservative local rule treats the context as expired, and this limitation is accepted
+
 #### Scenario: Token never reaches the host
 
 - **WHEN** the host handler receives an inbound envelope
@@ -223,7 +228,7 @@ The framework SHALL keep, for each admitted event, a reply context in connector-
 
 ### Requirement: Activity indicator lifecycle
 
-The framework SHALL call the platform's activity-start operation, when the platform declares Activity, as the first step of each event's work and before invoking the host handler, and SHALL keep the returned disposable until the reply to that message is delivered, the maximum activity duration (default 2 minutes) elapses, or the connector stops, then dispose it exactly once. Failure or timeout of the activity operation MUST be logged as a warning and MUST NOT prevent the handler from running. The host SHALL NOT be required to start or stop indicators.
+The framework SHALL call the platform's activity-start operation, when the platform declares Activity, as the first step of each event's work and before invoking the host handler, and SHALL keep the returned disposable until the reply to that message is delivered, the maximum activity duration (default 2 minutes) elapses, or the connector stops, then dispose it exactly once. Failure or timeout of the activity operation MUST be logged as a warning and MUST NOT prevent the handler from running. A result that the activity operation returns after its timeout elapsed, in any connector state, SHALL NOT be registered: the framework SHALL dispose it exactly once when it arrives and SHALL observe any exception it raises. The framework's commitment SHALL be limited to state it owns: no registration is kept, the disposable is disposed once, and no local timer or resend is started; effects the platform already produced end on the platform's own schedule. The host SHALL NOT be required to start or stop indicators.
 
 #### Scenario: Indicator started before handler
 
@@ -250,9 +255,24 @@ The framework SHALL call the platform's activity-start operation, when the platf
 - **WHEN** the platform's activity-start operation returns null for the chat
 - **THEN** nothing is stored and no error is raised
 
+#### Scenario: Late result while running
+
+- **WHEN** the activity operation ignores cancellation, times out at 2 seconds, the handler replies at 2.1 seconds, and the operation returns a disposable at 3 seconds
+- **THEN** the disposable is disposed exactly once at 3 seconds, it is never registered, and the framework holds no registration, timer, or resend for it
+
+#### Scenario: Late result with a local timer
+
+- **WHEN** a platform returns, after the activity timeout, a disposable that owns a repeating local timer
+- **THEN** disposing it stops the timer immediately and the framework never registers it
+
+#### Scenario: Late failure is observed
+
+- **WHEN** the activity operation faults after its timeout elapsed
+- **THEN** the exception is observed and logged and no unobserved task exception occurs
+
 ### Requirement: Timeouts and event work budget
 
-The framework SHALL apply per-call timeouts of 2 seconds to the activity operation and 10 seconds to reply and push by default, and a processing budget of 30 seconds to each event, each overridable by connector settings. The processing budget SHALL start when a worker starts processing the event, not when it was admitted. The remaining event budget SHALL be exposed to the host handler through its cancellation token. A timeout or cancellation of one call MUST NOT be reported as a platform failure to the host.
+The framework SHALL apply per-call timeouts of 2 seconds to the activity operation and 10 seconds to reply and push by default, and a processing budget of 30 seconds to each event, each overridable by connector settings. The processing budget SHALL start when a worker starts processing the event, not when it was admitted. The remaining event budget SHALL be exposed to the host handler through its cancellation token. A timeout or cancellation of one call MUST NOT be reported as a platform failure to the host. Cancellation is cooperative: the framework SHALL guarantee that the budget frees a worker and leaves other events unaffected only for handlers that honor the cancellation token, and the handler contract SHALL state this.
 
 #### Scenario: Activity call hangs
 
@@ -266,12 +286,115 @@ The framework SHALL apply per-call timeouts of 2 seconds to the activity operati
 
 #### Scenario: Event budget exhausted
 
-- **WHEN** an event's handler runs longer than the processing budget
-- **THEN** the handler's cancellation token is cancelled, the failure is logged, and other events are unaffected
+- **WHEN** a cooperative handler runs longer than the processing budget
+- **THEN** the handler's cancellation token is cancelled, the handler returns, the failure is logged, and other events are unaffected
+
+### Requirement: Worker overrun and degraded admission
+
+When a handler has not returned within the overrun grace (`Work:OverrunGrace`, default 5 seconds) after its event budget was cancelled, the framework SHALL mark its worker as overrun, SHALL log an error once, and SHALL revoke the work lease of that event. The framework SHALL NOT replace an overrun worker, so the number of handlers running at the same time never exceeds the configured maximum concurrency. While every worker is overrun the connector SHALL be Degraded. Degraded SHALL be a flag that exists only while the connector lifecycle is Running and SHALL NOT be a fourth lifecycle state: while Degraded the connector SHALL discard each new event without registering it, log the discard, and still return the success status, and it SHALL leave Degraded automatically when any overrun handler returns, but only if the lifecycle is still Running. While the lifecycle is Stopping or Stopped, a returning handler SHALL only update the overrun count and the log and SHALL NOT reopen admission, process queued work, or lift the 503 response. Work items admitted before the connector became Degraded SHALL be processed under the maximum queue age when the connector recovers while Running, and SHALL be discarded under the stop rules when the connector stops. The framework SHALL log each worker's state (idle, running, overrun) transitions and every entry into and exit from Degraded.
+
+#### Scenario: One handler overruns
+
+- **WHEN** one of 4 handlers ignores cancellation and the budget plus overrun grace elapse
+- **THEN** its worker is marked overrun, one error is logged, the other 3 workers keep processing events, and the connector is not Degraded
+
+#### Scenario: All handlers overrun
+
+- **WHEN** all 4 handlers ignore cancellation and the budget plus overrun grace elapse
+- **THEN** the connector becomes Degraded, a new event is discarded without registration with a log entry and a 200 response, and never more than 4 handlers run at the same time
+
+#### Scenario: Recovery while running
+
+- **WHEN** one overrun handler returns while the connector is Degraded and Running
+- **THEN** the connector leaves Degraded, logs the exit, and processes the next queued or new event
+
+#### Scenario: Queued work after recovery
+
+- **WHEN** an item was queued 40 seconds before recovery with a maximum queue age of 30 seconds and another was queued 10 seconds before
+- **THEN** after recovery the first is discarded as too old and the second is processed
+
+#### Scenario: Handler returns during stopping
+
+- **WHEN** all workers are overrun, stop begins, and one handler then returns
+- **THEN** the connector does not leave Degraded, does not reopen admission, does not process queued work, and keeps responding 503
+
+#### Scenario: Handler returns after stopped
+
+- **WHEN** an overrun handler returns after the connector reached Stopped
+- **THEN** only the overrun count and the log change and nothing is processed or sent
+
+#### Scenario: Overrun handler cannot send
+
+- **WHEN** an overrun handler later tries to deliver a message
+- **THEN** the delivery is rejected as unavailable and no platform API is called
+
+### Requirement: Delivery acceptance and lease classification
+
+The connector's delivery operation SHALL return `Accepted` when it was permitted to attempt the delivery, in which case later platform failures are logged and do not change the result, and SHALL return `Unavailable` without calling the platform when it refuses the delivery. A work lease SHALL be a connector-private, revocable shared reference that records the connector instance that owns it, that the framework creates around each handler invocation and propagates through the normal asynchronous execution context, restoring the previous ambient value when the handler returns; it SHALL be revoked when its handler returns, its event budget is cancelled, its worker is marked overrun, or the grace period of stopping ends. A lease is valid for a delivery only when its owner is the connector instance receiving the delivery, it is not revoked, and the state rules below allow it; a lease owned by another connector instance, whether valid or revoked, SHALL be treated as no lease for the receiving instance. Delivery SHALL be classified by the caller and the connector state as follows: a caller with a valid own lease is accepted while Running and while Stopping within the grace period and is unavailable when Stopped; a caller carrying a revoked own lease is unavailable in every state; a caller with no lease or only another instance's lease, such as a later active push, is accepted while Running and unavailable while Stopping and Stopped. Whether a caller carries a revoked own lease SHALL be determined by the presence of the ambient value and its owner, independent of the connector state. A delivery check and the registration of an in-flight delivery SHALL be ordered by the same state gate, and the supplied cancellation token SHALL NOT be treated as permission. The lease SHALL NOT be visible to the host.
+
+#### Scenario: Caller without a lease while running
+
+- **WHEN** a caller with no lease delivers a message with no in-reply-to message while the connector is Running
+- **THEN** the delivery is accepted and the platform push operation is called
+
+#### Scenario: Valid lease while running
+
+- **WHEN** a handler running under a valid lease delivers a message
+- **THEN** the delivery is accepted
+
+#### Scenario: Revoked lease after the handler returned
+
+- **WHEN** a task started by a handler delivers after the handler returned, with a cancellation token that is never cancelled, while the connector is Running
+- **THEN** the delivery is unavailable and no platform API is called, for both a reply and a push
+
+#### Scenario: Revoked lease after the budget expired
+
+- **WHEN** a task started by a handler delivers after the event budget was cancelled, while the connector is Running
+- **THEN** the delivery is unavailable and no platform API is called, for both a reply and a push
+
+#### Scenario: Valid lease while stopping
+
+- **WHEN** a handler running under a valid lease starts a task with Task.Run during Stopping within the grace period and that task delivers a message
+- **THEN** the delivery is accepted
+
+#### Scenario: No lease while stopping
+
+- **WHEN** a caller without a lease delivers during Stopping
+- **THEN** the delivery is unavailable and no platform API is called
+
+#### Scenario: Any caller after stop
+
+- **WHEN** any caller, with or without a lease, delivers after the connector reached Stopped
+- **THEN** the delivery is unavailable and no platform API is called
+
+#### Scenario: Platform failure after acceptance
+
+- **WHEN** a delivery is accepted and the platform call fails
+- **THEN** the result is still accepted and the failure is logged
+
+#### Scenario: Another instance's lease while stopping
+
+- **WHEN** connector B is Stopping and a handler of connector A, holding a valid lease owned by A, sends a message that the gateway routes to B
+- **THEN** B treats the caller as having no lease, the delivery is unavailable, and no platform API is called
+
+#### Scenario: Another instance's lease while running
+
+- **WHEN** connector B is Running and a handler of connector A, holding a valid lease owned by A, sends a message routed to B
+- **THEN** B treats the caller as having no lease and the delivery is accepted as an ordinary active push
+
+#### Scenario: Two instances from one assembly and from separate load contexts
+
+- **WHEN** two instances of the same connector type are created from one loaded assembly, and again from two separately loaded copies of the assembly
+- **THEN** in both cases a lease owned by one instance is never accepted as the other instance's lease
+
+#### Scenario: Lease stays private
+
+- **WHEN** the host handler runs
+- **THEN** neither the inbound envelope nor any host-visible type exposes the lease
 
 ### Requirement: Connector stop and cleanup
 
-The connector SHALL have the states Running, Stopping, and Stopped, and admission of events and the transition to Stopping SHALL be serialized by the same state gate. On stop the framework SHALL enter Stopping, close admission and respond 503 to new webhook requests, discard each work item not yet started with a log entry (keeping its registration), and let executing work continue until the configured stop grace period (default 10 seconds) without draining the queue. While Stopping, a delivery SHALL be accepted only from a caller holding a valid work lease: a connector-private, revocable shared reference created by the framework around each handler invocation, validated against its connector instance, the work's validity, and the stop state, and propagated through the normal asynchronous execution context so that a task started by the handler inherits it; the delivery check and in-flight delivery registration SHALL be ordered by the state gate, and a delivery without a valid lease SHALL be rejected and logged. A lease is revoked when its handler returns, its event budget is cancelled, or the grace period ends. When the grace period ends the framework SHALL revoke all leases, close delivery permission, cancel executing work and in-flight deliveries, and then wait up to the configured join timeout (default 5 seconds) for workers, background timers, and activity cleanup to exit before entering Stopped; every activity disposable not yet disposed SHALL be disposed exactly once. After Stopped, every delivery entry point, including calls from the host, SHALL be rejected without calling the platform. Cancellation is cooperative and the framework SHALL NOT promise to terminate operations that ignore cancellation. A stop whose join completes normally leaves no framework-owned worker, timer, or cleanup running. When the join timeout expires the framework SHALL log the abandoned work and isolate its continuations: after Stopped no new event processing, activity indicator, or platform call SHALL start and no timer SHALL restart, and a late continuation SHALL only observe its result or exception and release resources, and MUST NOT register an activity indicator or send through the gateway.
+The connector SHALL have the states Running, Stopping, and Stopped, and admission of events and the transition to Stopping SHALL be serialized by the same state gate. On stop the framework SHALL enter Stopping, close admission and respond 503 to new webhook requests, discard each work item not yet started with a log entry (keeping its registration), and let executing work continue until the configured stop grace period (default 10 seconds) without draining the queue; deliveries during Stopping are governed by the lease classification. When the grace period ends the framework SHALL revoke all leases, close delivery permission, cancel executing work and in-flight deliveries, and then wait up to the configured join timeout (default 5 seconds) for workers, background timers, and activity cleanup to exit before entering Stopped; every activity disposable not yet disposed SHALL be disposed exactly once. Cancellation is cooperative and the framework SHALL NOT promise to terminate operations that ignore cancellation. A stop whose join completes normally leaves no framework-owned worker, timer, or cleanup running. When the join timeout expires the framework SHALL log the abandoned work and isolate its continuations: after Stopped no new event processing, activity indicator, or platform call SHALL start and no timer SHALL restart, and a late continuation SHALL only observe its result or exception and release resources, and MUST NOT register an activity indicator or send through the gateway. The connector SHALL report a stop budget equal to the sum of the configured stop grace period and the configured join timeout, and when the cancellation token supplied to the stop operation is cancelled the framework SHALL treat the remaining budget as exhausted: it SHALL revoke all leases at once, cancel executing work and in-flight deliveries, skip waiting for the grace period and the join, log that the stop was interrupted by the host, return, and isolate any late continuations as for an expired join timeout.
 
 #### Scenario: Stop waits for work
 
@@ -301,7 +424,7 @@ The connector SHALL have the states Running, Stopping, and Stopped, and admissio
 #### Scenario: Late continuation cannot send
 
 - **WHEN** an abandoned handler resumes after stop returned and calls the gateway to send
-- **THEN** no platform API is called and the rejection is logged
+- **THEN** no platform API is called and the delivery is unavailable
 
 #### Scenario: Late activity result is released once
 
@@ -313,20 +436,15 @@ The connector SHALL have the states Running, Stopping, and Stopped, and admissio
 - **WHEN** stop is requested with two activity indicators still active
 - **THEN** each is disposed exactly once
 
-#### Scenario: Lease allows delivery while stopping
+#### Scenario: Stop budget
 
-- **WHEN** a handler running under a valid lease starts a task with Task.Run during Stopping and that task delivers a message with no in-reply-to message
-- **THEN** the delivery is accepted
+- **WHEN** the grace period is 10 seconds and the join timeout is 5 seconds
+- **THEN** the reported stop budget is 15 seconds, and after overriding the grace period to 20 seconds it is 25 seconds
 
-#### Scenario: Revoked lease cannot deliver
+#### Scenario: Host cancels the stop
 
-- **WHEN** a task that inherited a lease delivers after the handler returned or the grace period ended
-- **THEN** the delivery is rejected and logged
-
-#### Scenario: No lease while stopping
-
-- **WHEN** a caller without a lease delivers during Stopping
-- **THEN** the delivery is rejected and logged
+- **WHEN** the cancellation token given to the stop operation is cancelled 2 seconds into the grace period while an event is executing
+- **THEN** the leases are revoked, the work and in-flight delivery are cancelled, the stop returns without waiting for the remaining grace period, and the interruption is logged
 
 #### Scenario: Admission races with stop
 
@@ -342,6 +460,30 @@ The connector SHALL have the states Running, Stopping, and Stopped, and admissio
 
 - **WHEN** a webhook request arrives after stop was requested
 - **THEN** the response status is 503 and nothing is admitted
+
+### Requirement: Framework settings schema
+
+The framework SHALL expose a list of setting descriptors for its tuning parameters so that platform factories can include them in their own settings schema, each descriptor giving the key, value kind, default, minimum, and a description. The parameters SHALL be: `Dedup:Ttl` (duration, default 10 minutes), `Dedup:MaxEntries` (integer, default 10000), `Timeouts:Activity` (duration, default 2 seconds), `Timeouts:Send` (duration, default 10 seconds), `Timeouts:Event` (duration, default 30 seconds), `Work:MaxConcurrency` (integer, default 4), `Work:MaxPending` (integer, default 100), `Work:MaxQueueAge` (duration, default 30 seconds), `Work:OverrunGrace` (duration, default 5 seconds), `Stop:Grace` (duration, default 10 seconds), `Stop:JoinTimeout` (duration, default 5 seconds), and `Activity:MaxDuration` (duration, default 2 minutes). Every duration MUST be positive and every integer MUST be at least 1; a value that violates its descriptor SHALL fail connector creation with an error naming the setting and not its value. Changing these values through settings SHALL NOT require any code change.
+
+#### Scenario: Defaults
+
+- **WHEN** a connector is created with none of these settings
+- **THEN** it uses the defaults listed above
+
+#### Scenario: Override through settings
+
+- **WHEN** `Work:MaxConcurrency` is set to 8 and `Timeouts:Event` to 60 seconds
+- **THEN** up to 8 handlers run at the same time and the event budget is 60 seconds
+
+#### Scenario: Invalid value
+
+- **WHEN** `Work:MaxConcurrency` is 0 or `Timeouts:Send` is negative
+- **THEN** connector creation fails with an error naming the setting and not its value
+
+#### Scenario: Descriptors are discoverable
+
+- **WHEN** a factory lists its settings schema
+- **THEN** the list includes every framework parameter above with its default and description
 
 ### Requirement: Best-effort delivery
 

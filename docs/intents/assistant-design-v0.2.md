@@ -135,7 +135,7 @@ assistant/
     Saintber.Assistant.Connectors.Line.Tests/
     Saintber.Assistant.Host.Tests/       # WebApplicationFactory + 載入實際 LINE dll + 假 LINE 出口
   docs/
-    install-container.md  local-run.md  manual-test-line.md  architecture.md
+    install-container.md  local-run.md  manual-test-line.md  architecture.md  settings-reference.md
   scripts/                               # 送出簽章正確的假 webhook
 data/                                    # secret 與本機資料，須進 .gitignore
 ```
@@ -175,6 +175,8 @@ public interface IInboundMessageHandler
 }
 
 // Host 提供；只承諾「已接受」，不承諾「已送達」（「發」）。
+// Accepted：Connector 取得送出許可（之後平台失敗只記錄）；UnknownConnector：找不到或已停用；
+// ConnectorUnavailable：已知 Connector 拒絕（Stopping 無有效 lease、Stopped、攜帶已撤銷 lease），不呼叫平台。
 public interface IOutboundGateway
 {
     Task<SendAcceptance> SendAsync(OutboundEnvelope message, CancellationToken cancellationToken);
@@ -185,9 +187,10 @@ public interface IConnector
 {
     string ConnectorType { get; }
     string InstanceId { get; }
+    TimeSpan StopBudget { get; }   // 最壞停止時間，由 Connector 回報，Host 據此算關閉預算（不需引用 Core）
     Task StartAsync(IInboundMessageHandler handler, CancellationToken cancellationToken);
     Task StopAsync(CancellationToken cancellationToken);
-    Task DeliverAsync(OutboundEnvelope message, CancellationToken cancellationToken);
+    Task<DeliveryAcceptance> DeliverAsync(OutboundEnvelope message, CancellationToken cancellationToken); // Accepted／Unavailable
 }
 
 // webhook 型 Connector 額外實作；Host 只提供一條通用路由，不理解簽章與 payload。
@@ -200,6 +203,7 @@ public interface IWebhookReceiver
 public interface IConnectorFactory
 {
     string ConnectorType { get; }
+    IReadOnlyList<SettingDescriptor> Settings { get; }   // 自訂欄位的描述：鍵名、型別、必要、預設值、secret、範圍、說明
     IConnector Create(ConnectorCreationContext context);
 }
 ```
@@ -236,7 +240,21 @@ public interface IWebhookInbound
 - **接受事件的資料流**：內部事件工作使用有界 `Channel`（`FullMode=Wait`、只用 `TryWrite`）加固定 worker；在同一個短閘門內檢查 Running 與重複，對新事件只呼叫一次 `TryWrite`，成功才登記並建立 reply 脈絡，失敗（過載）則不登記；worker 取得同一閘門確認登記已提交才開始處理。因此「登記就一定已排入」；入列後因排隊超齡（`Work:MaxQueueAge`，預設 30 秒，估計值）或停止被丟棄的事件仍保留登記。
 - **reply 脈絡共享**：同一訊息 key 的多筆事件登記共享同一個 reply 脈絡，由所有仍保留的登記共同決定去留；「已用」只保證到脈絡被移除為止。
 - **停止契約**：Running → Stopping → Stopped、不 drain；Stopping 時新請求回 503、尚未啟動的事件丟棄、執行中事件在寬限期內可送出（以 Core 私有、可撤銷的 work lease 判定）；寬限期到後取消並等待退出至 `Stop:JoinTimeout`。取消是合作式的：正常 join 時 Core 自己的元件全部退出；逾時放棄後遲到的延續被隔離（不送出、不登記活動、不重啟計時器），但不承諾終止不遵守取消的外部操作。
+- **Running 下的 handler 合作契約**：取消是合作式的。Connector 只保證合作式 handler 的事件預算與其他事件不受影響；預算取消後再過 `Work:OverrunGrace`（5 秒，估計值）仍未返回的 handler，其 worker 標記為 overrun，Connector 不替換 worker（同時執行的 handler 不超過並行上限），所有 worker 都 overrun 時進入 Degraded（新事件丟棄且不登記），有 handler 返回時自動恢復。
+- **送出許可（lease）分類**：帶有效 lease 的呼叫在 Running 與 Stopping（寬限期內）允許；攜帶已撤銷 lease 的遲到子工作在任何狀態都被拒絕；完全沒有 lease 的呼叫（例如將來的 AI 完成事件主動 push）在 Running 允許、Stopping 與 Stopped 拒絕。被拒絕時 `DeliverAsync` 回 `Unavailable`，gateway 回 `ConnectorUnavailable`，與平台投遞失敗（仍為 `Accepted`）分開。
+- **關閉預算**：Host 關閉時對所有實例並行呼叫 `StopAsync`（各一次，失敗互不影響）；Connector 停止預算（`StopBudget`，預設 `Stop:Grace` 10 秒加 `Stop:JoinTimeout` 5 秒）< Host 關閉預算（所有實例 `StopBudget` 最大值加 `Assistant:Shutdown:Margin` 5 秒）< 容器 `stop_grace_period`（30 秒），數值皆為估計；Host 取消權杖到達時 Connector 立即中斷。
 - 跨請求不保證處理順序；訊息順序屬於日後 Topic 路由的責任。
+
+### 5.1.3 Connector 實例清單：通用欄位與自訂欄位
+
+「目前可用的 Connector」由可載入的 dll 與**組態中的實例清單**（`Connectors`，以實例 ID 為鍵的物件）構成，平台參數可只改設定、不改程式。清單不用陣列，因為 .NET 組態依索引與葉節點合併陣列，較短的陣列會留下尾端元素、重排索引會讓某個來源的憑證落到另一個實例上（已實測）：
+
+| 欄位類別 | 欄位 | 說明 |
+| --- | --- | --- |
+| 通用欄位（Host 理解） | 鍵（即 `InstanceId`：小寫字母開頭，小寫字母、數字與單一底線，最長 32 字元）、`Type`、`Enabled`（預設 true）、`Assembly`、`DisplayName`（選填） | 停用的實例不載入 dll、不建立 webhook 路由（404）；分層只能新增與覆寫，移除須 `Enabled=false` |
+| 自訂欄位 | `Settings` | 平台專屬參數（如 LINE 的 `ApiBaseUrl`、`LoadingSeconds`）、通用層調校參數（去重 TTL 與上限、逾時秒數、並行與等待上限、停止寬限等）與 secret；由 factory 以 `SettingDescriptor` 宣告；Host 遞迴扁平化葉節點為冒號鍵後驗證結構、型別與範圍（未知鍵、型別、範圍、必要鍵），平台才有的規則（如 `LoadingSeconds` 為 5 的倍數）由 factory 驗證；時間長度為帶冒號的 `hh:mm:ss`（單獨數字會被當成天數，故拒絕）；錯誤訊息只含實例 ID 與鍵名 |
+
+儲存方式採現有的 .NET 組態分層（映像內 `appsettings.json` ＜ 可選的 `Assistant:ConfigFile` 外部 JSON 檔〔明確指名卻不存在則啟動失敗〕＜ 環境變數，如 `Connectors__line__Settings__ChannelSecret`），不引入資料庫：無新相依、與 `env_file` 與「secret 放 `data/`」的約定一致、容器內不需 volume 即可運作。變更需重啟 Host；SQLite 或資料庫儲存、執行期清單端點與管理介面、熱載入待有持久層與管理需求（PostgreSQL 階段）再評估，屆時只需換組態來源。啟動時把實例摘要（不含設定值）寫入日誌；不提供執行期清單的 HTTP 端點。各設定鍵的預設值與範圍見 `assistant/docs/settings-reference.md`。
 - 輪詢型通用 Connector 的基底類別待 Telegram 或 CLI 實際出現再抽出；`IConnector` 的生命週期契約已預留。
 
 ### 5.2 固定的內部訊息格式
@@ -822,6 +840,11 @@ LINE 階段額外要求：
 | 失敗語意 | best-effort、最多嘗試一次，可能沒有 echo（已接受） |
 | 逾時與事件處理預設值 | 活動提示 2 秒、reply／push 10 秒、單一事件預算 30 秒、並行 4、等待上限 100、停止寬限 10 秒；皆為估計值，需實測調整；回應 200 路徑不含任何平台呼叫 |
 | 去重保證範圍 | 僅在「登記保留期間」內；容量淘汰提前結束保護窗屬已接受限制；只有成功入列的事件才登記，過載丟棄不登記 |
+| Connector 實例清單 | 組態中以實例 ID 為鍵的 `Connectors` 物件：通用欄位（`Type`、`Enabled`、`Assembly`、`DisplayName`）＋自訂欄位 `Settings`（factory 以描述宣告並由 Host 統一驗證）；儲存採 .NET 組態分層（`appsettings.json` ＜ 外部 JSON 檔 ＜ 環境變數），不引入資料庫，變更需重啟 |
+| Running 下不合作的 handler | 只保證合作式 handler；全部 worker 都 overrun 時進入 Degraded，不替換 worker |
+| 送出許可與 gateway 結果 | lease 記錄所屬實例且不是跨 Connector 的通行證（外來 lease 視為無 lease）；Degraded 是 Running 底下的旗標；lease 依呼叫者與狀態分類；`Accepted`／`UnknownConnector`／`ConnectorUnavailable` 三種結果；活動逾時後的晚到結果不登記、立即釋放 |
+| 重送事件的 reply token | 維持保守的 `min(收到時間, 事件時間)`，重送事件仍可能被強制 push 的成本已接受；平台專屬規則留待實測與官方文件確認後由使用者決議 |
+| 載入環境與關閉預算 | 依正規化的 dll 完整路徑共用一個 `AssemblyLoadContext`（相同路徑的實例共用 factory，不同路徑獨立；Connector 不得把實例狀態放在 static）；Host 並行停止各實例，預算排序為 `StopBudget` < Host 關閉預算 < 容器 `stop_grace_period: 30s`（估計值）；實例頂層只允許 `Type`／`Enabled`／`Assembly`／`DisplayName`／`Settings`，未知欄位使啟動失敗 |
 | 事件工作與停止 | 有界 Channel＋固定 worker（並行 4、等待 100、`Work:MaxQueueAge` 30 秒，皆估計值）；停止採 Running→Stopping→Stopped、不 drain、work lease、`Stop:JoinTimeout` 5 秒（估計值）與保證分級 |
 | ExternalKey 資料所有權 | `Properties` 為獨立 `Clone()` 的 `JsonElement`；canonical 與 Properties 由平台 factory 同源產生，LINE 送出前驗證一致 |
 | 傳輸層資訊隔離 | Host 看到的 envelope 與 metadata 不含 reply token、事件編號、重送資訊 |

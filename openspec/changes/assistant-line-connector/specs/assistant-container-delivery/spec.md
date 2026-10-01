@@ -50,12 +50,22 @@ The build context SHALL be the `assistant/` directory, and `assistant/.dockerign
 
 ### Requirement: Compose definition
 
-The project SHALL provide `assistant/compose.yaml` that builds from context `assistant/` with `Containerfile`, reads configuration from the repository-root `data/assistant.env`, and publishes the container port to a host port. The compose file MUST use only fields supported by both Docker Compose and Podman compose, MUST NOT mount the container engine socket, and MUST NOT mount the user's home directory.
+The project SHALL provide `assistant/compose.yaml` that builds from context `assistant/` with `Containerfile`, reads configuration from the repository-root `data/assistant.env`, and publishes the container port to a host port, and SHALL set `stop_grace_period` to 30 seconds so that it exceeds the host shutdown budget. The compose file MUST use only fields supported by both Docker Compose and Podman compose, MUST NOT mount the container engine socket, and MUST NOT mount the user's home directory.
 
 #### Scenario: Start with either engine
 
 - **WHEN** `docker compose -f assistant/compose.yaml up --build` or `podman compose -f assistant/compose.yaml up --build` is run with a valid `data/assistant.env`
 - **THEN** the host starts and `GET /healthz` on the published port returns 200
+
+#### Scenario: Stop within the grace period
+
+- **WHEN** `compose stop` is run while a cooperative handler needs a few seconds of cleanup
+- **THEN** the host finishes within its shutdown budget and the process exits with a normal exit code before the container stop grace period ends
+
+#### Scenario: Uncooperative handler at stop
+
+- **WHEN** `compose stop` is run while a handler ignores cancellation
+- **THEN** the host abandons it at its shutdown timeout, logs the abandoned work, and the process is not killed by SIGKILL (the exit code is not 137)
 
 #### Scenario: Compose file rules
 
@@ -64,7 +74,7 @@ The project SHALL provide `assistant/compose.yaml` that builds from context `ass
 
 ### Requirement: Secret files are not committed
 
-The project SHALL exclude the repository-root `data/` directory from version control and SHALL provide `assistant/.env.example` containing every required setting name, including the `Connectors__0__...` form for the LINE connector, with placeholder values only.
+The project SHALL exclude the repository-root `data/` directory from version control and SHALL provide `assistant/.env.example` containing every required setting name, including the `Connectors__line__...` form for the LINE connector and the common fields `Type` and `Enabled`, with placeholder values only.
 
 #### Scenario: Data directory ignored
 
@@ -74,11 +84,16 @@ The project SHALL exclude the repository-root `data/` directory from version con
 #### Scenario: Example file has only placeholders
 
 - **WHEN** `assistant/.env.example` is inspected
-- **THEN** it lists `Connectors__0__Settings__ChannelSecret` and `Connectors__0__Settings__ChannelAccessToken` with placeholder values that are not real credentials
+- **THEN** it lists `Connectors__line__Settings__ChannelSecret` and `Connectors__line__Settings__ChannelAccessToken` with placeholder values that are not real credentials
 
 ### Requirement: Installation and run documentation
 
-The project SHALL provide documentation under `assistant/docs/` covering: installing and verifying Docker and Podman (including the Windows behavior where `podman compose` delegates to an external compose provider and the alternative of running without compose), local run without containers, the architecture with module responsibilities, dependency direction, the connector load unit (published folder with assembly, `.deps.json`, and dependencies) and contract version compatibility, and how a new connector is added, and the LINE manual test procedure. Each document MUST state its prerequisites and the expected result of every verification step.
+The project SHALL provide documentation under `assistant/docs/` covering: a settings reference (`settings-reference.md`) that lists the common fields and every connector setting key with its kind, default, range, whether it is secret, and whether its default is an estimate, together with the instance id rules, equivalent JSON and environment variable examples, the duration format (colon form, never a bare number), the rule that layering only adds and overrides and an instance is removed only by `Enabled=false`, the shutdown budget relationship (the largest `Stop:Grace` plus `Stop:JoinTimeout` plus `Assistant:Shutdown:Margin` must stay below the compose `stop_grace_period`, which must be raised by hand when the stop settings are raised), the configuration source order, and how to supply the optional external JSON file (an explicitly named but missing file stops startup) (including the rootless Podman volume permission note, and that only non-secret values belong in it); installing and verifying Docker and Podman (including the Windows behavior where `podman compose` delegates to an external compose provider and the alternative of running without compose), local run without containers, the architecture with module responsibilities, dependency direction, the connector load unit (published folder with assembly, `.deps.json`, and dependencies) and contract version compatibility, and how a new connector is added, and the LINE manual test procedure. Each document MUST state its prerequisites and the expected result of every verification step.
+
+#### Scenario: Settings reference
+
+- **WHEN** a maintainer opens `assistant/docs/settings-reference.md`
+- **THEN** it lists the common fields and every setting key of the LINE connector and the framework tuning parameters with kind, default, range, secret flag, and estimate flag, gives equivalent JSON and environment variable examples, and states the instance id rules, the duration format, and the configuration source order
 
 #### Scenario: Container install guide
 
@@ -88,7 +103,7 @@ The project SHALL provide documentation under `assistant/docs/` covering: instal
 #### Scenario: Manual LINE test guide
 
 - **WHEN** a maintainer follows `assistant/docs/manual-test-line.md`
-- **THEN** the guide covers creating the LINE channel, exposing the local port through a tunnel, setting the webhook URL to `/webhook/<instance id>`, sending a one-to-one and a group message, the expected echo replies and loading behavior, how to verify the real push path by setting `Assistant:Echo:Mode=push`, how to confirm in the LINE console that webhook error statistics show no `request_timeout`, a statement that the local reply validity is an estimate and that a platform rejection of a reply token is logged without a push fallback, and troubleshooting for signature failures and missing replies
+- **THEN** the guide covers creating the LINE channel, exposing the local port through a tunnel, setting the webhook URL to `/webhook/<instance id>`, sending a one-to-one and a group message, the expected echo replies and loading behavior, how to verify the real push path by setting `Assistant:Echo:Mode=push`, how to confirm in the LINE console that webhook error statistics show no `request_timeout`, a statement that the local reply validity is an estimate and that a platform rejection of a reply token is logged without a push fallback, a note that a loading animation started after the activity timeout can still show for a few seconds after the reply because LINE offers no way to cancel it, and troubleshooting for signature failures and missing replies
 
 #### Scenario: Architecture guide
 

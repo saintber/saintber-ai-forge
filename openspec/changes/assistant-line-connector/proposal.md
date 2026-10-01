@@ -12,10 +12,11 @@
 - 新增 `Abstractions`：Host 與 Connector 之間的契約——收（`IInboundMessageHandler`）、發（`IOutboundGateway`）、`IConnector`、`IWebhookReceiver`、`IConnectorFactory`，以及 `InboundEnvelope`／`OutboundEnvelope`／`ExternalKey`。
 - 新增 `Connectors.Core`：通用 Webhook 型 Connector，負責驗簽→解析→去重→先回 200 的共同流程、Connector 內部的事件處理（並行與等待上限、停止清理）、reply 憑證快取（綁定原始聊天室）與 reply／push 選擇、活動提示（loading／typing）生命週期、逾時與事件預算；並定義平台轉接層介面 `IMessagingPlatform`（Reply、Push、Activity 的聯集，附能力宣告）與 `IWebhookInbound`（Verify、Parse）。
 - 新增 `Connectors.Line`：LINE 的平台轉接層，只實作 LINE 的驗簽、事件解析、reply／push／loading API 呼叫。
-- 新增 `Host`：通用路由 `POST /webhook/{instanceId}`、啟動時依組態載入 Connector dll、發送閘道、echo handler、健康檢查。
+- 新增 `Host`：通用路由 `POST /webhook/{instanceId}`、啟動時依組態載入 Connector dll、發送閘道（`Accepted`／`UnknownConnector`／`ConnectorUnavailable` 三種結果）、echo handler、健康檢查。
+- 新增 **Connector 實例清單**：組態中以實例 ID 為鍵的 `Connectors` 物件（不用陣列，避免依索引合併造成憑證錯置），每個實例有通用欄位（`Type`、`Enabled`、`Assembly`、`DisplayName`）與自訂欄位 `Settings`（平台專屬參數與通用層調校參數如秒數、上限次數，以及 secret）；自訂欄位由 factory 以描述宣告並由 Host 統一驗證，平台參數可只改設定不改程式。儲存方式採現有的 .NET 組態分層（映像內 `appsettings.json` ＜ 可選的外部 JSON 檔 ＜ 環境變數），不引入資料庫；分層只能新增與覆寫，移除實例須明確設 `Enabled=false`；時間長度使用帶冒號的 `hh:mm:ss`。
 - 新增 echo handler，用以證明收發路徑可用（Host 的預設 handler）；`Assistant:Echo:Mode=push` 可讓 echo 走真實的 push 路徑以供人工驗收。
 - 新增容器交付：`Containerfile`（build context 為 `assistant/`）、`compose.yaml`、`.env.example`、`.dockerignore`，Docker 與 Podman 皆可執行；LINE 的 dll 預設放在映像內。
-- 新增文件：容器安裝、本機執行、LINE 人工測試手冊、架構與責任邊界。
+- 新增文件：容器安裝、本機執行、LINE 人工測試手冊、架構與責任邊界、設定參考（所有欄位與設定鍵的預設值與範圍）。
 - 新增 xUnit 測試（單元、整合、架構邊界）與離線假 webhook 腳本。
 - 新增 GitHub Actions：restore → build → test → 以 docker 與 podman 各建置容器映像（不發佈）。
 - 根目錄 `.gitignore` 加入 `data/`（secret 與本機資料）。
@@ -30,6 +31,9 @@
 - Host 與 Connector 之間的發送佇列（Queue）、Topic lock、任何持久化（PostgreSQL、Redis、SQLite）；發送介面只預留「已接受」語意，1a 直接呼叫。Connector 內部先回 200 再處理事件的記憶體工作不屬於發送佇列，不跨程序、不持久化。
 - Telegram 與自製 CLI 的 Connector，以及輪詢型通用 Connector 的基底類別（僅預留 `IConnector` 生命週期契約）。
 - 執行中不重啟的 Connector 熱載入與卸載；跨容器外部載入 dll 的情境（只做啟動時依組態載入）。
+- Connector 清單以資料庫（SQLite 等）儲存、執行期清單的 HTTP 端點與管理介面、組態熱載入；清單與設定的變更需重新啟動 Host。
+- 強制終止忽略取消的 handler；替換卡住的 worker（只偵測並進入 Degraded，Degraded 是 Running 底下的旗標）。
+- 從組態中移除實例（只能 `Enabled=false`）。
 - 非文字訊息（圖片、貼圖等）的處理，僅忽略並記錄。
 - 容器映像發佈到 registry、自動部署（CD）。
 - 使用 LINE 官方或第三方 SDK。
@@ -38,9 +42,9 @@
 
 ### New Capabilities
 
-- `connector-framework`: 通用 Webhook 型 Connector——共同收訊流程、重送去重、reply 憑證與 reply／push 選擇、活動提示生命週期、逾時與批次預算、平台轉接層介面與能力宣告。
+- `connector-framework`: 通用 Webhook 型 Connector——共同收訊流程、重送去重、reply 憑證與 reply／push 選擇、活動提示生命週期、逾時與事件預算、worker overrun 與 Degraded、送出許可（lease）分類、停止清理、調校參數描述、平台轉接層介面與能力宣告。
 - `line-connector`: LINE 的平台轉接層——驗簽、事件解析為 `InboundEnvelope` 與 External Key、reply／push／loading API 呼叫、文字長度限制。
-- `assistant-host`: webhook 路由、Connector 載入與生命週期、收發介面（handler 與發送閘道）、echo handler、設定、健康檢查、依賴方向。
+- `assistant-host`: webhook 路由、Connector 實例清單（通用欄位與自訂欄位、設定描述與驗證、組態來源分層）、Connector 載入與生命週期、收發介面（handler 與發送閘道及其三種結果）、echo handler、設定、健康檢查、依賴方向。
 - `assistant-container-delivery`: Docker／Podman 皆可執行的容器化、build context 隔離、交付文件與人工測試手冊、假 webhook 工具、CI 建置與測試。
 
 ### Modified Capabilities
