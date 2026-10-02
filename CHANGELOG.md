@@ -17,6 +17,7 @@
 - `.gitignore` 新增 `.saifg/`、`.copilot-library/`，避免本機測試/安裝殘留檔案誤入版控。
 
 ### 變更
+- **Herdr 網格 pane 工具重構並遷移至 `tools/herdr/`**：`scripts/herdr-grid.cjs` 改為 `tools/herdr/grid.cjs`（離線模擬 `grid-simulate.cjs`）。新增 `--name`（新 pane 命名）、`--no-reorder`、`--focus`；新增欄改為逐列長出並以暫存 tab 搬移，使每欄列高可獨立調整；版面相容時自動將 pane 排成逐列順序；移除 realign。規格見 `openspec/specs/herdr-grid/spec.md`，使用說明見 `docs/tools/herdr/grid.md`。
 - **AI 工具生產流程改版（Draft/Deploy/Release 階段化）**：
   - `ai/README.md`：將流程改為 module 內雙語 Draft（`ai/<module>/en/[type]`、`ai/<module>/zh-TW/[type]`），移除 `composed` 作為流程主節點，並明確 Deploy/Release 階段邊界。
   - `ai/manifest.yaml`：模組映射由 `composed` 調整為 `draft`，並改用 module 內 `en` / `zh-TW` 路徑。

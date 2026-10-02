@@ -2,47 +2,43 @@
 'use strict';
 
 /**
- * herdr-grid.js — 依照「橫向優先擴張、縱向次之、左先右後」規則，
+ * tools/herdr/grid.cjs — 依照「橫向優先擴張、縱向次之、左先右後」規則，
  * 在指定 Herdr workspace/tab 內新增下一個 pane。
  *
  * 目標序列（欄:欄:欄，每個數字＝該欄的列數）：
  *   1 => 1:1 => 2:1 => 2:2 => 2:2:1 => 2:2:2 => 3:2:2 => 3:3:2 => 3:3:3 => ...
  *
  * 重要概念（Herdr 分割是二元樹狀分割，不是表格）：
- *   當「新增一欄」時（例如 2:2 -> 2:2:1），實際上只有「被切割的那一列」在新欄位
- *   產生對應 pane；同一來源欄位的其他列，其 pane 寬度並未改變，於是變成一個
- *   「橫跨新舊兩欄寬度」的寬 pane（例如 2:2:1 狀態下，欄2 第2列的 pane 其實還是
- *   佔滿欄2+欄3 的寬度，並非真的只在欄2）。若不處理這個寬 pane，光靠「數欄位/列數」
- *   來決定下一步會選錯目標、切錯方向（這正是先前版本的 bug 根源）。
+ *   若新增一欄時直接讓新 pane 橫跨所有列，或同欄的 down-split 同時涵蓋新舊兩欄，
+ *   調整某欄列高時鄰欄會被一起拉動（列高耦合）。本腳本讓「每次呼叫只新增一個 pane」，
+ *   並逐列長出新欄（2:2 -> 2:2:1 -> 2:2:2），同時保證每欄的 down-split 只涵蓋自己那一欄：
+ *     add-column  最後一欄第一列往右切，新欄只長在第一列；該欄其餘列暫時是橫跨新舊兩欄的寬 pane。
+ *     fill        補齊下一列：把第一個寬 pane 搬到暫存 tab（herdr pane move 在同 tab 內無效，
+ *                 reason=same_tab），再搬回同欄上一列下方（此時它只佔舊欄寬度），
+ *                 最後在新欄最後一個 pane 往下切出新 pane，與剛搬回的 pane 同列。
+ *     add-row     列數最少且最靠左的欄，最下面 pane 往下切。
+ *   注意：只保證之後新增的欄不耦合，不會修復舊版本已建立的 tab。
  *
- * 演算法（每次只新增 1 個 pane，且每次都重新讀取真實版面，不維護內部狀態）：
- *   0. 優先偵測「寬 pane」：依所有 pane 的 x 座標推得欄位邊界(colStarts)，
- *      任何 pane 的右邊界超出其所屬欄位邊界的下一條線，代表它橫跨了多個欄位寬度。
- *      若存在寬 pane（依讀取順序取由上到下、由左到右第一個），優先把它往右切開，
- *      切割比例 = (下一欄邊界 - 該pane.x) / 該pane.width，使左半邊寬度精確對齊
- *      既有較窄欄位的寬度。這一步不算「新增列」也不算「新增欄」，純粹是修正對齊。
- *   1. 若無寬 pane（版面已對齊），才依 pane rect 的 x 座標分群成「欄」，
- *      每欄內再依 y 座標排序成「列」（由上到下），計算兩個候選：
- *        A（新增一欄）：在最右欄的「第一列」pane 上，往右切一刀。
- *        B（在現有欄新增一列）：找列數最少且最靠左的欄，
- *          在該欄「最下面」的 pane 上，往下切一刀。
- *   2. 兩個候選各自算出「新增後的欄數 與 最大列數」之差的絕對值，
- *      取差值較小者；差值相同時優先選 A（橫向優先擴張）。
+ * 重新排序：版面符合本腳本結構（欄列數等於 canonicalShape(pane 數)）時，新 pane 排在最後，
+ *   既有 pane 維持目前閱讀順序（逐列、再逐欄），再用 pane swap 重新排成逐列順序
+ *   （例如 5 個 pane：第一列 1,2,3、第二列 4,5）。版面不符則略過；--no-reorder 可關閉。
+ *
+ * 決策規則：新增後「欄數與最大列數」差值較小者勝，平手優先新增欄。
  *
  * 用法（ID 或名稱皆可混用，見下方解析規則）：
- *   node herdr-grid.js layout   --tab w1:t1
- *   node herdr-grid.js layout   --tab Company --workspace Main
- *   node herdr-grid.js layout   --tab Main:Company
- *   node herdr-grid.js next     --tab w1:t1
- *   node herdr-grid.js split    --tab w1:t1 --cwd "C:\path\to\worktree" [--no-focus] [--dry-run] [--no-equalize]
- *   node herdr-grid.js equalize --tab w1:t1 [--dry-run]
+ *   node tools/herdr/grid.cjs layout   --tab w1:t1
+ *   node tools/herdr/grid.cjs layout   --tab Company --workspace Main
+ *   node tools/herdr/grid.cjs layout   --tab Main:Company
+ *   node tools/herdr/grid.cjs next     --tab w1:t1
+ *   node tools/herdr/grid.cjs split    --tab w1:t1 --cwd "C:\path\to\worktree" [--name <pane名稱>] [--focus] [--no-reorder] [--no-equalize] [--dry-run]
+ *   node tools/herdr/grid.cjs equalize --tab w1:t1 [--dry-run]
  *
- * 平均分配（equalize）：split 完成新增/對齊後，預設會自動把「目前所有 pane」的寬高
+ * 平均分配（equalize）：split 完成新增後，預設會自動把「目前所有 pane」的寬高
  * 調整為精確平均分配（例如 2:2:1 新增後不會維持切割當下的固定比例，而是讓 3 欄寬度
  * 平均、各欄內的列高度也平均）。原理是 herdr pane resize 的 --amount 直接加/減在該
  * 切割線的 ratio 上，且是精確線性運算，所以可以一次算出每條切割線「目標 ratio - 目前
  * ratio」的差值並直接命中，不需要反覆試探。傳 --no-equalize 可跳過這個自動平均步驟，
- * 只做新增/對齊本身；也可以單獨呼叫 `equalize` 子指令，隨時把現有版面重新調整為平均。
+ * 只做新增本身；也可以單獨呼叫 `equalize` 子指令，隨時把現有版面重新調整為平均。
  *
  * workspace/tab 解析規則（ID 與顯示名稱皆可，AI 建議用 ID 較精確，人類慣用名稱）：
  *   - --workspace 可為 workspace_id（如 w1）或其顯示名稱 label（如 Main），比對時 id 優先、
@@ -234,28 +230,6 @@ function getColumnStarts(layoutPanes) {
   }
   xs.sort((a, b) => a - b);
   return { xs, tolerance };
-}
-
-// 偵測「寬 pane」：因 Herdr 分割是二元樹狀分割，新增一欄時只有被切的那一列對齊到新欄，
-// 同欄其他列的 pane 寬度不變，於是會橫跨新舊兩欄的寬度（即其右邊界越過了某條欄位邊界線）。
-// 若存在這種未對齊的寬 pane，必須優先把它往右切齊，否則後續「數欄位/列數」的判斷會失準。
-// 依由上到下、由左到右的順序取第一個找到的寬 pane，確保結果穩定可重現。
-function findMisalignedWidePane(layoutPanes) {
-  const { xs, tolerance } = getColumnStarts(layoutPanes);
-  const sorted = [...layoutPanes].sort((a, b) => a.rect.y - b.rect.y || a.rect.x - b.rect.x);
-  for (const p of sorted) {
-    const rightEdge = p.rect.x + p.rect.width;
-    for (const x of xs) {
-      if (x > p.rect.x + tolerance && x < rightEdge - tolerance) {
-        return {
-          targetPaneId: p.pane_id,
-          direction: 'right',
-          ratio: (x - p.rect.x) / p.rect.width,
-        };
-      }
-    }
-  }
-  return null;
 }
 
 // --- 以下用於精確選出 herdr pane resize 的目標 pane（實測驗證過的行為）---
@@ -540,106 +514,205 @@ function computeNext(columns) {
   };
 }
 
-// 決定下一步動作：優先修正任何未對齊的寬 pane（realign），沒有才走新增欄/列邏輯。
+// 寬 pane：右邊界越過了下一條欄位起點（新增一欄後、尚未補齊的列）。依由上到下、由左到右排序。
+function findWidePanes(layoutPanes) {
+  const { xs, tolerance } = getColumnStarts(layoutPanes);
+  const wide = layoutPanes.filter((p) => {
+    const right = p.rect.x + p.rect.width;
+    return xs.some((x) => x > p.rect.x + tolerance && x < right - tolerance);
+  });
+  return wide.sort((a, b) => a.rect.y - b.rect.y || a.rect.x - b.rect.x);
+}
+
+// 逐列、再逐欄（列優先）展開：第一列由左到右，再第二列……
+function rowMajor(columns) {
+  const out = [];
+  const maxRows = Math.max(...columns.map((c) => c.length));
+  for (let r = 0; r < maxRows; r++) {
+    for (const c of columns) if (r < c.length) out.push(c[r]);
+  }
+  return out;
+}
+
+// n 個 pane 時，本腳本序列應有的欄列數（例如 5 -> "2:2:1"）。用來判斷現有版面是否相容、可否重新排序。
+function canonicalShape(n) {
+  let cols = [['_0']];
+  let seq = 1;
+  for (let i = 1; i < n; i++) {
+    const next = computeNext(cols);
+    const id = `_${seq++}`;
+    if (next.mode === 'A') {
+      cols = [...cols, [id]];
+    } else {
+      const idx = cols.findIndex((c) => c[c.length - 1] === next.targetPaneId);
+      cols = cols.map((c, k) => (k === idx ? [...c, id] : c));
+    }
+  }
+  return describeGrid(cols);
+}
+
+// 決定下一步：
+//   fill       補齊上一次新增欄時留下的寬 pane（搬出 → 搬回上一列下方 → 新欄最後一個 pane 往下切）
+//   add-column 最後一欄第一列往右切（只在該列長出新欄，其餘列暫時維持寬 pane）
+//   add-row    列數最少且最靠左的欄，最下面 pane 往下切
 function planNext(layoutPanes) {
   const columns = reconstructColumns(layoutPanes);
   const beforeDescription = describeGrid(columns);
+  const total = columns.flat().length;
+  const compatible = beforeDescription === canonicalShape(total);
 
-  const misaligned = findMisalignedWidePane(layoutPanes);
-  if (misaligned) {
+  const wide = findWidePanes(layoutPanes);
+  if (wide.length > 0) {
+    const w = wide[0];
+    const colIdx = columns.findIndex((c) => c.includes(w.pane_id));
+    const pos = columns[colIdx].indexOf(w.pane_id);
+    const nextCol = columns[colIdx + 1];
+    if (pos < 1 || !nextCol) {
+      throw new Error(`版面結構不符預期，無法補齊寬 pane ${w.pane_id}（欄${colIdx + 1} 第${pos + 1}列）`);
+    }
+    const after = columns.map((c, i) => (i === colIdx + 1 ? [...c, '(new)'] : c));
     return {
-      mode: 'realign',
-      targetPaneId: misaligned.targetPaneId,
-      direction: misaligned.direction,
-      ratio: misaligned.ratio,
+      mode: 'fill',
+      widePaneId: w.pane_id,
+      anchorPaneId: columns[colIdx][pos - 1],
+      targetPaneId: nextCol[nextCol.length - 1],
+      direction: 'down',
+      ratio: 0.5,
+      columns,
+      compatible,
       beforeDescription,
-      afterDescription: `${beforeDescription}(對齊修正中，非新增)`,
+      afterDescription: describeGrid(after),
     };
   }
 
   const next = computeNext(columns);
-  return { ...next, mode: next.mode === 'A' ? 'add-column' : 'add-row' };
+  return { ...next, mode: next.mode === 'A' ? 'add-column' : 'add-row', columns, compatible };
+}
+
+// 目前順序 -> 期望順序所需的 swap 清單（selection sort，只交換位置不改分割樹）。
+function planSwaps(slots, desired) {
+  const cur = [...slots];
+  const swaps = [];
+  for (let i = 0; i < desired.length; i++) {
+    if (cur[i] === desired[i]) continue;
+    const j = cur.indexOf(desired[i]);
+    swaps.push([cur[i], cur[j]]);
+    [cur[i], cur[j]] = [cur[j], cur[i]];
+  }
+  return swaps;
 }
 
 function cmdLayout(args) {
   const layoutPanes = fetchLayoutPanes(args);
-  const misaligned = findMisalignedWidePane(layoutPanes);
   const columns = reconstructColumns(layoutPanes);
   console.log('目前版面：', describeGrid(columns));
   columns.forEach((c, i) => console.log(`  欄${i + 1}:`, c.join(' -> ')));
-  if (misaligned) {
-    console.log(
-      `  [警告] 偵測到未對齊的寬 pane ${misaligned.targetPaneId}，下一步 split 會先對齊它（往右切，ratio=${misaligned.ratio.toFixed(4)}），而非新增欄/列。`
-    );
-  }
+  const total = columns.flat().length;
+  console.log(`  排序相容：${describeGrid(columns) === canonicalShape(total) ? '是' : '否（split 時不會重新排序）'}`);
 }
 
 function cmdNext(args) {
-  const layoutPanes = fetchLayoutPanes(args);
-  const next = planNext(layoutPanes);
-  const modeLabel = { realign: '對齊修正(非新增)', 'add-column': 'add-column(橫向新增一欄)', 'add-row': 'add-row(縱向在現有欄新增一列)' }[next.mode];
+  const next = planNext(fetchLayoutPanes(args));
   console.log(JSON.stringify(
     {
       before: next.beforeDescription,
       after: next.afterDescription,
-      mode: modeLabel,
+      mode: next.mode,
       target_pane_id: next.targetPaneId,
       direction: next.direction,
       ratio: Number(next.ratio.toFixed(6)),
+      move_wide_pane: next.mode === 'fill' ? next.widePaneId : undefined,
+      move_below: next.mode === 'fill' ? next.anchorPaneId : undefined,
+      will_reorder: next.compatible,
     },
     null,
     2
   ));
 }
 
+function splitPane(targetPaneId, direction, ratio, cwd, noFocus) {
+  const a = ['pane', 'split', '--pane', targetPaneId, '--direction', direction, '--ratio', Number(ratio).toFixed(6), '--cwd', cwd];
+  if (noFocus) a.push('--no-focus');
+  return herdr(a).result.pane.pane_id;
+}
+
+// 補齊寬 pane 且避免列高耦合。herdr pane move 在同一 tab 內無效（same_tab），所以先搬到暫存 tab。
+//   1. 寬 pane 搬到暫存 tab：其兄弟節點取代原位置，新欄 pane 變成跨多列的高 pane。
+//   2. 搬回原 tab，掛在同欄上一列(anchor)下方：舊欄多出這一列，且只涵蓋舊欄寬度。
+//   3. 新欄最後一個 pane 往下切，得到新 pane，剛好與剛搬回的 pane 同列。
+function executeFill(workspaceId, tabId, plan, cwd, noFocus) {
+  const out = herdr(['pane', 'move', plan.widePaneId, '--new-tab', '--workspace', workspaceId, '--label', 'grid-tmp', '--no-focus']).result.move_result;
+  if (!out.changed) throw new Error(`暫存寬 pane ${plan.widePaneId} 失敗：${out.reason ?? '未知原因'}`);
+  const tmpTabId = out.created_tab.tab_id;
+  const wideId = out.pane.pane_id;
+
+  try {
+    const back = herdr(['pane', 'move', wideId, '--tab', tabId, '--split', 'down', '--target-pane', plan.anchorPaneId, '--ratio', '0.5', '--no-focus']).result.move_result;
+    if (!back.changed) throw new Error(back.reason ?? '未知原因');
+  } catch (e) {
+    throw new Error(
+      `pane ${wideId} 已搬到暫存 tab ${tmpTabId}，但搬回失敗：${e.message}。` +
+      `請手動執行：herdr pane move ${wideId} --tab ${tabId} --split down --target-pane ${plan.anchorPaneId}`
+    );
+  }
+
+  try {
+    const left = herdr(['tab', 'list', '--workspace', workspaceId]).result.tabs.find((t) => t.tab_id === tmpTabId);
+    if (left) herdr(['tab', 'close', tmpTabId]);
+  } catch (_) { /* 暫存 tab 已自動消失 */ }
+
+  return splitPane(plan.targetPaneId, 'down', 0.5, cwd, noFocus);
+}
+
+// 新 pane 一律排在最後，其餘維持原本的閱讀順序，然後用 swap 把所有 pane 排成列優先順序。
+// 版面與腳本序列不相容時略過。
+function reorderPanes(desired) {
+  const layout = herdr(['pane', 'layout', '--pane', desired[0]]).result.layout;
+  const cols = reconstructColumns(layout.panes);
+  if (describeGrid(cols) !== canonicalShape(desired.length)) return { skipped: `版面 ${describeGrid(cols)} 與預期不符` };
+  const slots = rowMajor(cols);
+  if (slots.length !== desired.length || !desired.every((id) => slots.includes(id))) return { skipped: 'pane 清單不一致' };
+  const swaps = planSwaps(slots, desired);
+  for (const [a, b] of swaps) herdr(['pane', 'swap', '--source-pane', a, '--target-pane', b]);
+  return { swaps: swaps.length };
+}
+
 function cmdSplit(args) {
   if (!args.cwd) throw new Error('split 需要 --cwd 指定新 pane 的工作目錄');
-  const layoutPanes = fetchLayoutPanes(args);
-  const next = planNext(layoutPanes);
+  const { workspaceId, tabId } = resolveWorkspaceAndTab(args);
+  const layout = herdr(['pane', 'layout', '--pane', anyPaneInTab(workspaceId, tabId)[0].pane_id]).result.layout;
+  const next = planNext(layout.panes);
+  const noFocus = args.focus !== true;
+  const modeLabel = { fill: '補齊寬 pane', 'add-column': '新增欄', 'add-row': '新增列' }[next.mode];
+  const doReorder = next.compatible && args['no-reorder'] !== true;
+  const oldOrder = rowMajor(next.columns);
 
-  const splitArgs = [
-    'pane', 'split',
-    '--pane', next.targetPaneId,
-    '--direction', next.direction,
-    '--ratio', next.ratio.toFixed(6),
-    '--cwd', args.cwd,
-  ];
-  if (args['no-focus'] !== false) splitArgs.push('--no-focus');
-
-  const modeLabel = next.mode === 'realign' ? '對齊修正(非新增)' : (next.mode === 'add-column' ? '新增欄' : '新增列');
-  console.log(
-    `[herdr-grid] (${modeLabel}) ${next.beforeDescription} -> 切割 ${next.targetPaneId} 往${next.direction === 'right' ? '右' : '下'} (ratio=${next.ratio.toFixed(4)})`
-  );
-
+  console.log(`[herdr-grid] (${modeLabel}) ${next.beforeDescription} -> ${next.afterDescription}，目標 ${next.targetPaneId}`);
   if (args['dry-run']) {
-    console.log('[herdr-grid] --dry-run，未實際執行 split。指令為：', 'herdr', splitArgs.join(' '));
+    console.log('[herdr-grid] --dry-run，未實際執行。');
     return;
   }
 
-  const result = herdr(splitArgs);
-  const newPaneId = result.result.pane.pane_id;
+  const newPaneId = next.mode === 'fill'
+    ? executeFill(workspaceId, tabId, next, args.cwd, noFocus)
+    : splitPane(next.targetPaneId, next.direction, next.ratio, args.cwd, noFocus);
 
-  // 新增/對齊之後，若使用者要求平均分配（預設開啟，--no-equalize 可關閉），
-  // 把目前所有 pane 的寬高調整為精確平均，而非維持切割當下的固定比例。
-  let equalizeResult = null;
-  if (args['no-equalize'] !== true) {
-    equalizeResult = equalizeLayout(args, false);
-  }
+  if (typeof args.name === 'string' && args.name) herdr(['pane', 'rename', newPaneId, args.name]);
 
-  // 對齊修正只是中間步驟，實際「新增後版面」以重新讀取的真實版面為準，避免預測誤差累積。
-  const afterColumns = fetchColumns(args);
-  const afterDescription = describeGrid(afterColumns);
-  const stillMisaligned = findMisalignedWidePane(fetchLayoutPanes(args));
+  const reorder = doReorder
+    ? reorderPanes([...oldOrder, newPaneId])
+    : { skipped: next.compatible ? '--no-reorder' : '既有版面不符本腳本結構' };
+  const equalizeResult = args['no-equalize'] !== true ? equalizeLayout(args, false) : null;
 
   console.log(JSON.stringify(
     {
       new_pane_id: newPaneId,
+      name: typeof args.name === 'string' ? args.name : undefined,
       action: next.mode,
-      layout_after: afterDescription,
+      layout_after: describeGrid(fetchColumns(args)),
+      reorder_swaps: reorder.swaps,
+      reorder_skipped: reorder.skipped,
       equalized_steps: equalizeResult ? equalizeResult.applied : undefined,
-      note: next.mode === 'realign'
-        ? (stillMisaligned ? '仍有未對齊的寬 pane，請再呼叫一次 split 繼續對齊' : '對齊完成，可再呼叫一次 split 以真正新增下一個工作 pane')
-        : undefined,
     },
     null,
     2
@@ -656,7 +729,7 @@ function cmdEqualize(args) {
   console.log(JSON.stringify(result.plan, null, 2));
 }
 
-module.exports = { computeNext, describeGrid, reconstructColumns, findMisalignedWidePane, planNext };
+module.exports = { computeNext, describeGrid, reconstructColumns, planNext, findWidePanes, rowMajor, canonicalShape, planSwaps };
 
 function main() {
   const [sub, ...rest] = process.argv.slice(2);
@@ -675,7 +748,7 @@ function main() {
     case 'equalize':
       return cmdEqualize(args);
     default:
-      console.error('用法: node herdr-grid.js <layout|next|split|equalize> --tab <workspace(id/名稱)>:<tab(id/名稱)> [--workspace <id/名稱>] [--cwd <path>] [--dry-run] [--no-equalize]');
+      console.error('用法: node tools/herdr/grid.cjs <layout|next|split|equalize> --tab <workspace(id/名稱)>:<tab(id/名稱)> [--workspace <id/名稱>] [--cwd <path>] [--name <名稱>] [--focus] [--no-reorder] [--no-equalize] [--dry-run]');
       process.exit(2);
   }
 }
