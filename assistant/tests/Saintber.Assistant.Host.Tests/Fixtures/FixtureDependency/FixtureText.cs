@@ -1,0 +1,1 @@
+namespace FixtureDependency; public static class FixtureText {public static string Value=>"hello";}

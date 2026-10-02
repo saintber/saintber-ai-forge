@@ -1,0 +1,59 @@
+name: Assistant CI
+
+on:
+  push:
+    branches: ['**']
+    paths:
+      - 'assistant/**'
+      - '.github/workflows/assistant-ci.yml'
+  pull_request:
+    paths:
+      - 'assistant/**'
+      - '.github/workflows/assistant-ci.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Build and test .NET 10
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: assistant
+    steps:
+      - uses: actions/checkout@v7
+      - name: Set up .NET 10
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '10.0.x'
+          dotnet-quality: ga
+      - name: Restore
+        run: dotnet restore Assistant.sln
+      - name: Build Release
+        run: dotnet build Assistant.sln --configuration Release --no-restore
+      - name: Run all tests
+        run: dotnet test Assistant.sln --configuration Release --no-build --no-restore
+      - name: Install CI validation dependencies
+        run: npm ci --prefix tests/Assistant.Ci.Tests
+      - name: Validate workflow semantics
+        run: npm test --prefix tests/Assistant.Ci.Tests
+      - name: Test fake webhook tool
+        run: dotnet run --file scripts/fake-webhook-tests.cs -- scripts/fake-webhook.cs
+      - name: Test fake LINE API tool
+        run: dotnet run --file scripts/fake-line-api-tests.cs -- scripts/fake-line-api.cs
+
+  images:
+    name: Build image (${{ matrix.engine }})
+    needs: [test]
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: [docker, podman]
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build container image
+        env:
+          CONTAINER_ENGINE: ${{ matrix.engine }}
+        run: '"$CONTAINER_ENGINE" build --file assistant/Containerfile --tag assistant-host:ci assistant/'

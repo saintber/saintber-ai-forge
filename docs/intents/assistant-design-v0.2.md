@@ -1,7 +1,7 @@
 # Assistant 設計稿
 
 **版本**：0.2（討論稿）  
-**日期**：2026-10-01（2026-09-30 初版；10-01 依規格審閱與討論同步 Connector 結構）  
+**日期**：2026-10-02（2026-09-30 初版；10-01 同步 Connector 結構；10-02 同步 LINE 階段已實作介面與文件）  
 **狀態**：Proposed／尚有待確認決策  
 **前一版**：[ai-cli-gateway-design-v0.1.md](./ai-cli-gateway-design-v0.1.md)（保留不動，供對照決策來由）
 
@@ -125,7 +125,7 @@ assistant/
                                          #   IConnector、IWebhookReceiver、IConnectorFactory、
                                          #   IInboundMessageHandler、IOutboundGateway
     Saintber.Assistant.Connectors.Core/  # 通用 Webhook Connector：去重、reply 憑證、reply／push 選擇、
-                                         #   活動提示、逾時與批次預算；IMessagingPlatform、IWebhookInbound
+                                         #   活動提示、逾時與事件預算；IMessagingPlatform、IWebhookInbound
     Saintber.Assistant.Connectors.Line/  # LinePlatform：驗簽、解析、reply／push／loading API 呼叫
     Saintber.Assistant.Host/             # ASP.NET Core：webhook 路由、Connector 載入器、發送閘道、
                                          #   echo handler、設定、健康檢查
@@ -145,9 +145,11 @@ data/                                    # secret 與本機資料，須進 .giti
 | 專案 | 負責 | 明確不負責 |
 | --- | --- | --- |
 | Abstractions | Host ↔ Connector 契約與共用型別 | 任何平台細節、任何 I/O |
-| Connectors.Core | 通用 Webhook 型 Connector 的共同流程：去重、reply 憑證與 reply／push 選擇、活動提示、逾時與批次預算；平台轉接層介面 | 任何單一平台的 API 與格式 |
+| Connectors.Core | 通用 Webhook 型 Connector 的共同流程：去重、reply 憑證與 reply／push 選擇、活動提示、逾時與事件預算；平台轉接層介面 | 任何單一平台的 API 與格式 |
 | Connectors.Line | LINE 的驗簽、事件解析、reply／push／loading API 呼叫、文字長度限制 | 去重、reply／push 選擇、活動提示生命週期、判斷同一個人、選 Topic、AI |
 | Host | HTTP 路由、Connector 載入與生命週期、發送閘道、echo handler、設定、健康檢查 | 業務規則、平台欄位與憑證；不引用 Core 與 Line |
+
+Connector 載入單元為乾淨 publish 資料夾（dll＋.deps.json＋自帶相依），依正規化完整路徑共用載入環境；Abstractions 主版本需與 Host 相符。
 
 依賴方向：`Abstractions` ← `Connectors.Core` ← `Connectors.Line`；`Host` 只引用 `Abstractions`，Connector 以 dll 在啟動時依組態載入（`Abstractions` 與 `Microsoft.Extensions.Logging.Abstractions` 由 Host 提供，避免型別身分不一致）。目前只做「啟動時載入」，執行中不重啟的熱載入與卸載列為後續；契約與載入器已保留此擴充空間。
 
@@ -214,15 +216,15 @@ public interface IConnectorFactory
 
 ### 5.1.2 通用 Webhook Connector 與平台轉接層（`Connectors.Core`）
 
-通用 `WebhookConnector` 實作共同流程。**回應路徑**：驗簽 → 解析 → 對全部事件去重登記、記錄 reply 脈絡並排入內部工作 → 回 200（不等待任何活動提示、handler 或平台呼叫）。**事件工作**（Connector 內部，不因 HTTP 請求中斷而取消）：啟動活動提示 → 交給 Host handler。送出時依 `InReplyTo`、原始 Chat 與 reply 脈絡是否有效，選擇 reply 或 push。平台只需要提供下列兩個介面的實作（名稱不用 `Provider`，以免與 AI Provider 混淆）：
+通用 `WebhookConnector` 實作共同流程。**回應路徑**：驗簽 → 解析 → 同閘門檢查 Running／去重、TryWrite 成功後才登記及建立 reply 脈絡 → 回 200（不等待任何活動提示、handler 或平台呼叫）。**事件工作**（Connector 內部，不因 HTTP 請求中斷而取消）：啟動活動提示 → 交給 Host handler。送出時依 `InReplyTo`、原始 Chat 與 reply 脈絡是否有效，選擇 reply 或 push。平台只需要提供下列兩個介面的實作（名稱不用 `Provider`，以免與 AI Provider 混淆）：
 
 ```csharp
 // 送端聯集：各平台宣告自己支援哪些能力，通用層看能力決定路徑，不以 NotSupportedException 表示。
 public interface IMessagingPlatform
 {
     PlatformCapabilities Capabilities { get; }   // Reply／Push／Activity 旗標與 ReplyValidity
-    Task ReplyAsync(ReplyRequest request, CancellationToken cancellationToken);
-    Task PushAsync(PushRequest request, CancellationToken cancellationToken);
+    Task ReplyAsync(string replyToken, MessageContent content, CancellationToken cancellationToken);
+    Task PushAsync(ExternalKey chat, MessageContent content, CancellationToken cancellationToken);
     Task<IAsyncDisposable?> StartActivityAsync(ExternalKey chat, CancellationToken cancellationToken); // 不適用則回傳 null
 }
 
@@ -237,10 +239,11 @@ public interface IWebhookInbound
 - **聯集而非公約數**：Reply 為 LINE 獨有（一次性 token），取公約數會丟掉 LINE 最需要的能力；因此介面取聯集、以能力宣告區分。
 - 「何時用 reply、何時改用 push」屬於通用層政策，平台只負責 API 呼叫：Chat 與原始 Chat 相符、reply token 本地仍有效且未用才用 reply（檢查與標記已用為原子操作）；Chat 不符、無脈絡、本地過期或已用則 push 到 envelope 的 Chat；reply 已嘗試失敗（含平台拒絕 token）不自動補 push。「本地到期改走 push」與「平台拒絕不補 push」是兩個獨立行為。本地有效期（LINE 取 50 秒）是估計的啟發式，不是平台保證。
 - 去重保證僅限「登記保留期間」：容量淘汰會提前結束保護窗，使被淘汰的事件重送時再次處理，為有界記憶體所接受的取捨。
+- **事件預算**：從 worker 通過同閘門檢查生命週期與 QueueAge、真正開始處理起算，不含入列／排隊時間，含 activity、handler 與送出；HTTP 接收不等待事件工作。
 - **接受事件的資料流**：內部事件工作使用有界 `Channel`（`FullMode=Wait`、只用 `TryWrite`）加固定 worker；在同一個短閘門內檢查 Running 與重複，對新事件只呼叫一次 `TryWrite`，成功才登記並建立 reply 脈絡，失敗（過載）則不登記；worker 取得同一閘門確認登記已提交才開始處理。因此「登記就一定已排入」；入列後因排隊超齡（`Work:MaxQueueAge`，預設 30 秒，估計值）或停止被丟棄的事件仍保留登記。
 - **reply 脈絡共享**：同一訊息 key 的多筆事件登記共享同一個 reply 脈絡，由所有仍保留的登記共同決定去留；「已用」只保證到脈絡被移除為止。
 - **停止契約**：Running → Stopping → Stopped、不 drain；Stopping 時新請求回 503、尚未啟動的事件丟棄、執行中事件在寬限期內可送出（以 Core 私有、可撤銷的 work lease 判定）；寬限期到後取消並等待退出至 `Stop:JoinTimeout`。取消是合作式的：正常 join 時 Core 自己的元件全部退出；逾時放棄後遲到的延續被隔離（不送出、不登記活動、不重啟計時器），但不承諾終止不遵守取消的外部操作。
-- **Running 下的 handler 合作契約**：取消是合作式的。Connector 只保證合作式 handler 的事件預算與其他事件不受影響；預算取消後再過 `Work:OverrunGrace`（5 秒，估計值）仍未返回的 handler，其 worker 標記為 overrun，Connector 不替換 worker（同時執行的 handler 不超過並行上限），所有 worker 都 overrun 時進入 Degraded（新事件丟棄且不登記），有 handler 返回時自動恢復。
+- **Running 下的 handler 合作契約**：取消是合作式的。Connector 只保證合作式 handler 的事件預算與其他事件不受影響；預算取消後再過 `Work:OverrunGrace`（5 秒，估計值）仍未返回的 handler，其 worker 標記為 overrun，Connector 不替換 worker（同時執行的 handler 不超過並行上限），所有 worker 都 overrun 時進入 Degraded（新事件丟棄且不登記），有 handler 返回且生命週期仍為 Running 時自動恢復；Stopping／Stopped 不重新開放。
 - **送出許可（lease）分類**：帶有效 lease 的呼叫在 Running 與 Stopping（寬限期內）允許；攜帶已撤銷 lease 的遲到子工作在任何狀態都被拒絕；完全沒有 lease 的呼叫（例如將來的 AI 完成事件主動 push）在 Running 允許、Stopping 與 Stopped 拒絕。被拒絕時 `DeliverAsync` 回 `Unavailable`，gateway 回 `ConnectorUnavailable`，與平台投遞失敗（仍為 `Accepted`）分開。
 - **關閉預算**：Host 關閉時對所有實例並行呼叫 `StopAsync`（各一次，失敗互不影響）；Connector 停止預算（`StopBudget`，預設 `Stop:Grace` 10 秒加 `Stop:JoinTimeout` 5 秒）< Host 關閉預算（所有實例 `StopBudget` 最大值加 `Assistant:Shutdown:Margin` 5 秒）< 容器 `stop_grace_period`（30 秒），數值皆為估計；Host 取消權杖到達時 Connector 立即中斷。
 - 跨請求不保證處理順序；訊息順序屬於日後 Topic 路由的責任。
@@ -251,7 +254,7 @@ public interface IWebhookInbound
 
 | 欄位類別 | 欄位 | 說明 |
 | --- | --- | --- |
-| 通用欄位（Host 理解） | 鍵（即 `InstanceId`：小寫字母開頭，小寫字母、數字與單一底線，最長 32 字元）、`Type`、`Enabled`（預設 true）、`Assembly`、`DisplayName`（選填） | 停用的實例不載入 dll、不建立 webhook 路由（404）；分層只能新增與覆寫，移除須 `Enabled=false` |
+| 通用欄位（Host 理解） | 鍵（即 `InstanceId`：不分大小寫並正規化為小寫；正規化後字母開頭，小寫字母、數字與單一底線，最長 32 字元）、`Type`、`Enabled`（預設 true）、`Assembly`、`DisplayName`（選填） | 停用的實例不載入 dll、不建立 webhook 路由（404）；分層只能新增與覆寫，移除須 `Enabled=false` |
 | 自訂欄位 | `Settings` | 平台專屬參數（如 LINE 的 `ApiBaseUrl`、`LoadingSeconds`）、通用層調校參數（去重 TTL 與上限、逾時秒數、並行與等待上限、停止寬限等）與 secret；由 factory 以 `SettingDescriptor` 宣告；Host 遞迴扁平化葉節點為冒號鍵後驗證結構、型別與範圍（未知鍵、型別、範圍、必要鍵），平台才有的規則（如 `LoadingSeconds` 為 5 的倍數）由 factory 驗證；時間長度為帶冒號的 `hh:mm:ss`（單獨數字會被當成天數，故拒絕）；錯誤訊息只含實例 ID 與鍵名 |
 
 儲存方式採現有的 .NET 組態分層（映像內 `appsettings.json` ＜ 可選的 `Assistant:ConfigFile` 外部 JSON 檔〔明確指名卻不存在則啟動失敗〕＜ 環境變數，如 `Connectors__line__Settings__ChannelSecret`），不引入資料庫：無新相依、與 `env_file` 與「secret 放 `data/`」的約定一致、容器內不需 volume 即可運作。變更需重啟 Host；SQLite 或資料庫儲存、執行期清單端點與管理介面、熱載入待有持久層與管理需求（PostgreSQL 階段）再評估，屆時只需換組態來源。啟動時把實例摘要（不含設定值）寫入日誌；不提供執行期清單的 HTTP 端點。各設定鍵的預設值與範圍見 `assistant/docs/settings-reference.md`。
@@ -310,10 +313,15 @@ public sealed record OutboundEnvelope(
 但不可只靠 JSON 文字直接比較。Connector 必須另外產生 deterministic canonical key：
 
 ```csharp
-public sealed record ExternalKey(
-    string Kind,
-    string CanonicalValue,
-    JsonElement Properties);   // 獨立 Clone() 的 JsonElement，不傳遞需 Dispose 的 JsonDocument
+// 實作為 sealed class IEquatable<ExternalKey>，不是依所有欄位相等的 record。
+// 建構時複製 Properties；Equals／GetHashCode 僅依 ordinal CanonicalValue。
+public sealed class ExternalKey : IEquatable<ExternalKey>
+{
+    public string Kind { get; }
+    public string CanonicalValue { get; }
+    public JsonElement Properties { get; }
+    // new ExternalKey(kind, canonicalValue, properties)；Properties 在建構時 Clone()。
+}
 ```
 
 例如：
@@ -778,7 +786,7 @@ LINE 階段額外要求：
 重點是**完成 Connector 的實作與測試，並以 LINE 為第一個實作版本**：
 
 - `Abstractions`：Host ↔ Connector 契約（收：`IInboundMessageHandler`；發：`IOutboundGateway`；`IConnector`、`IWebhookReceiver`、`IConnectorFactory`）。
-- `Connectors.Core`：通用 Webhook Connector（去重、reply 憑證與 reply／push 選擇、活動提示、逾時與批次預算）與平台轉接層介面 `IMessagingPlatform`／`IWebhookInbound`。
+- `Connectors.Core`：通用 Webhook Connector（去重、reply 憑證與 reply／push 選擇、活動提示、逾時與事件預算）與平台轉接層介面 `IMessagingPlatform`／`IWebhookInbound`。
 - `Connectors.Line`：LINE 的驗簽、事件解析、External Key 正規化、reply／push／loading API 呼叫。
 - `Host`：通用 webhook 路由、啟動時依組態載入 Connector dll（LINE 預設放入映像）、發送閘道、echo handler、健康檢查。
 - Docker／Podman 皆可執行的 `Containerfile` 與 `compose.yaml`（build context 為 `assistant/`）。

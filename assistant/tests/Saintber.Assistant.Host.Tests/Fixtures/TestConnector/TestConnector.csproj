@@ -1,0 +1,1 @@
+<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework><AssemblyName>TestConnector</AssemblyName></PropertyGroup><ItemGroup><ProjectReference Include="../../../../src/Saintber.Assistant.Abstractions/Saintber.Assistant.Abstractions.csproj" /><ProjectReference Include="../FixtureDependency/FixtureDependency.csproj" /></ItemGroup></Project>

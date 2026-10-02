@@ -1,0 +1,11 @@
+services:
+  assistant:
+    image: assistant-host:local
+    build:
+      context: .
+      dockerfile: Containerfile
+    env_file:
+      - ../data/assistant.env
+    ports:
+      - "8080:8080"
+    stop_grace_period: 30s

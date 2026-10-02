@@ -1,0 +1,14 @@
+FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+WORKDIR /source
+COPY global.json Directory.Build.props ./
+COPY src/ ./src/
+RUN dotnet publish src/Saintber.Assistant.Host/Saintber.Assistant.Host.csproj -c Release -o /out/host && dotnet publish src/Saintber.Assistant.Connectors.Line/Saintber.Assistant.Connectors.Line.csproj -c Release -o /out/line
+
+FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS runtime
+WORKDIR /app
+COPY --from=build /out/host/ ./
+COPY --from=build /out/line/ ./connectors/line/
+ENV ASPNETCORE_HTTP_PORTS=8080
+USER $APP_UID
+EXPOSE 8080
+ENTRYPOINT ["dotnet", "Saintber.Assistant.Host.dll"]

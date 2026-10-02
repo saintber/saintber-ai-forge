@@ -1,0 +1,74 @@
+{
+  "mainline_branch": "features/#399413_MVC遷移",
+  "main_repo": "C:/Codes/Company/MAS_2026",
+  "worktree_root": "C:/Codes/Company/MAS_2026.worktrees",
+  "worktree_prefix": "features-MVCMigration",
+  "branch_prefix": "features/#399413_MVC遷移_聖博_功能支線",
+  "workspace_id": "w1",
+  "tab_id": "w1:t1",
+  "target_working_panes": 4,
+  "command_template": "/migration.mvc-request \n- `MIGRATION_WORK_TYPE`：`full`\n- `SCOPE_KIND`：`controller`\n- `SCOPE_VALUE`：`{SCOPE_VALUE}`\n- `MAX_CONTROLLERS`：`2`\n- `INVENTORY_CSV`：`tasks/MvcMigrations/controller-migration-inventory.csv`\n- `RUN_COMPILER_CHECK`：`true`",
+  "rename_note": "新開 pane 啟動 agent 後，先送 `/rename {SCOPE_VALUE}` 再送遷移 command。務必以 MSYS_NO_PATHCONV=1 前綴執行 herdr agent prompt。若 --wait 逾時或回報 stalled，指令仍可能已排入佇列，重送前先用 `herdr agent get` 檢查 terminal_title，避免 /rename 重複執行造成名稱串接。",
+  "pane_name_rule": "新 pane 名稱使用 Feature{NN}，NN 與 worktree 名稱 features-MVCMigration{NN} 的編號一致（例如 worktree20 -> Feature20），以 grid.cjs 的 --name 傳入。",
+  "grid_script": {
+    "path": "C:/Codes/Personal/saintber-ai-forge/tools/herdr/grid.cjs",
+    "docs": "docs/tools/herdr/grid.md",
+    "usage_layout": "node tools/herdr/grid.cjs layout --tab w1:t1",
+    "usage_split": "node tools/herdr/grid.cjs split --tab w1:t1 --cwd \"<新worktree絕對路徑>\" --name Feature{NN} [--dry-run] [--no-reorder] [--no-equalize]",
+    "note": "2026-10 腳本由 scripts/herdr-grid.cjs 搬到 tools/herdr/grid.cjs，新增 --name、--no-reorder，split 會重新排序既有 pane。--tab 可用 w1:t1 或 Main:Company。呼叫時需從專案根目錄(C:/Codes/Personal/saintber-ai-forge)執行。"
+  },
+  "task_queue": [],
+  "assigned": {
+    "20": {
+      "scope": "IRM005",
+      "pane_id": "w1:p7G",
+      "agent_name": "feature20",
+      "pane_name": "Feature20",
+      "worktree": "features-MVCMigration20",
+      "status": "BLOCKED_NEEDS_HUMAN",
+      "blocked_reason": "mvc-*-migration.ps1 DryRun 被 auto mode 分類器擋下，等使用者決策；21/22 的 settings.local.json 寫入也被分類器擋下。"
+    },
+    "21": {
+      "scope": "IRM010",
+      "pane_id": "w1:p7H",
+      "agent_name": "feature21",
+      "pane_name": "Feature21",
+      "worktree": "features-MVCMigration21",
+      "status": "BLOCKED_NEEDS_HUMAN",
+      "blocked_reason": "mvc-*-migration.ps1 DryRun 被 auto mode 分類器擋下，等使用者決策；21/22 的 settings.local.json 寫入也被分類器擋下。"
+    },
+    "22": {
+      "scope": "IRM015",
+      "pane_id": "w1:p7J",
+      "agent_name": "feature22",
+      "pane_name": "Feature22",
+      "worktree": "features-MVCMigration22",
+      "status": "BLOCKED_NEEDS_HUMAN",
+      "blocked_reason": "mvc-*-migration.ps1 DryRun 被 auto mode 分類器擋下，等使用者決策；21/22 的 settings.local.json 寫入也被分類器擋下。"
+    },
+    "23": {
+      "scope": "MAM020",
+      "pane_id": "w1:p7K",
+      "agent_name": "feature23",
+      "pane_name": "Feature23",
+      "worktree": "features-MVCMigration23",
+      "status": "BLOCKED_NEEDS_HUMAN",
+      "blocked_reason": "Inventory: backend InProgress、frontend Blocked。frontend 需遷移 CM/_MM042 partial（跨模組共用 partial），輸入框有使用者未送出草稿，使用者似乎正在處理。"
+    },
+    "24": {
+      "scope": "MAR015",
+      "pane_id": "w1:p7M",
+      "agent_name": "feature24",
+      "pane_name": "Feature24",
+      "worktree": "features-MVCMigration24",
+      "status": "BLOCKED_NEEDS_HUMAN",
+      "blocked_reason": "同樣被 DryRun 權限擋下；輸入框有使用者未送出草稿，使用者似乎正在處理。"
+    }
+  },
+  "legacy_panes_not_from_queue": {
+    "note": "2026-10 重建狀態檔。Company tab 內既有的 SAM010/SAM030/SAM005/SAM035/SAM015/SAR020/SAM020 等 pane(名稱 Feature09~14)屬於上一批任務，目前全部 idle，不列入本批 working 計數、也不主動介入，除非使用者指示。"
+  },
+  "next_worktree_number": 25,
+  "counting_rule": "working = agent_status 非 idle/blocked/done 的本批任務 pane。working < 4 且 task_queue 有任務時，開新 pane 補到 4；idle 但卡住等人工的 pane 不算可接續，不阻擋補位。上一批(Feature09~14)的 pane 不計入。task_queue 為空且本批 assigned 無 working 時，CronDelete 並通知使用者完成。舊分支 15/16/17/19 與 worktree 已不存在或殘留，本批一律從 20 起算。",
+  "current_layout": "4:3:3:3 (Company tab w1:t1)"
+}

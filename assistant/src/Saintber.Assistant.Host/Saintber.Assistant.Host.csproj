@@ -1,0 +1,4 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup><AssemblyVersion>1.0.0.0</AssemblyVersion></PropertyGroup>
+  <ItemGroup><ProjectReference Include="../Saintber.Assistant.Abstractions/Saintber.Assistant.Abstractions.csproj" /></ItemGroup>
+</Project>
