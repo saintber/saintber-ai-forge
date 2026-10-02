@@ -2,6 +2,8 @@
 
 前置條件：repo 根目錄、.NET 10 SDK、PowerShell 7；8080、18081 未占用。dotnet --version 預期 10.0.x；SDK 遵守 assistant/global.json。此流程不自動讀 data/assistant.env，環境變數由目前 shell 提供。
 
+Windows命令使用curl.exe；Linux／macOS將curl.exe改為curl，或用Invoke-WebRequest取得StatusCode。
+
 ## 建置與載入資料夾
 
 ~~~powershell

@@ -2,6 +2,8 @@
 
 前置條件：已取得 repository；終端機位於 repo 根目錄；可下載官方映像；8080 未占用。範例使用 PowerShell 7（Linux/macOS 可用 pwsh），執行 Linux containers。離線腳本另需 [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0)。
 
+Windows命令使用curl.exe；Linux／macOS將curl.exe改為curl，或用Invoke-WebRequest取得StatusCode。
+
 ## Docker
 
 Windows 依 [官方安裝指南](https://docs.docker.com/desktop/setup/install/windows-install/) 準備 WSL 2／虛擬化，下載、安裝並啟動 Docker Desktop，選 Linux containers。macOS 依 [Mac 指南](https://docs.docker.com/desktop/setup/install/mac-install/)；Linux 依 [Engine 指南](https://docs.docker.com/engine/install/) 選對發行版，安裝 Engine 與 Compose plugin 並啟動服務。預期：daemon 可供目前使用者連線。
@@ -55,7 +57,7 @@ podman compose -p assistant -f assistant/compose.yaml stop
 
 ## 不用 compose 的離線驗證
 
-前置條件：Podman、.NET 10 SDK；18083、18084 可用；專用名稱尚不存在。全部為假憑證，不讀 data/assistant.env、不停其他專案。Docker 可將 podman 換成 docker；Windows Docker volume 需允許分享 scripts 目錄。
+前置條件：Podman、.NET 10 SDK；18083、18084 可用；專用名稱尚不存在。全部為假憑證，不讀 data/assistant.env、不停其他專案。Docker 可將 podman 換成 docker；Windows Docker volume 需允許分享 scripts 目錄；SELinux 系統將專用 scripts 掛載的 :ro 改為 :ro,Z，權限說明見設定參考。
 
 ~~~powershell
 podman build -t assistant-host:docs-check -f assistant/Containerfile assistant/
